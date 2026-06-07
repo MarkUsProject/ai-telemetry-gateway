@@ -1,0 +1,192 @@
+# Local development stack: LiteLLM proxy + PostgreSQL.
+#
+# Purpose: validate the architecture from `docs/decision-record.md` end-to-end
+# on a developer machine before requesting production resources from sysadmin.
+# Production deployment will mirror this topology, with the differences called
+# out inline below under "PROD:".
+#
+# Quick start: see `README.md` in this folder.
+
+services:
+  postgres:
+    # Postgres 18.4 — latest stable as of 2026-05-14
+    # (per https://www.postgresql.org/about/news/...-3246/).
+    # PROD: same major version. Patch version follows sysadmin's policy.
+    image: postgres:18.4-alpine
+    container_name: aitg-postgres
+    restart: unless-stopped
+    environment:
+      # LOCAL ASSUMPTION (secrets): credentials sourced from a
+      # .env file in this directory. PROD: sysadmin's secret-management tool
+      # (systemd EnvironmentFile, Kubernetes Secret, HashiCorp Vault, etc.).
+      POSTGRES_USER: ${POSTGRES_USER:-aitg_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required — see .env.example}
+      POSTGRES_DB: ${POSTGRES_DB:-aitg}
+    ports:
+      # LOCAL ASSUMPTION (firewall): exposed on a non-default host
+      # port (5434) so it does not clash with MarkUs's Postgres on 5432.
+      # Listener is bound to 127.0.0.1 — never reachable from outside the host.
+      # PROD: Postgres listens on a private subnet; the LiteLLM container reaches
+      # it through the internal network. No host port exposure.
+      - "127.0.0.1:5434:5432"
+    volumes:
+      # Postgres 18+ changed the recommended mount point. The image now stores
+      # data in a major-version-specific subdirectory under /var/lib/postgresql,
+      # which enables in-place pg_upgrade. Older Postgres 13–17 images mounted
+      # /var/lib/postgresql/data directly. Reference:
+      # https://github.com/docker-library/postgres/pull/1259
+      - aitg-postgres-data:/var/lib/postgresql
+      # init-db.sql runs once on first container start. Creates the application
+      # role with CRUD-only privileges separate from the admin role.
+      # PROD: equivalent SQL applied via the chosen migration tooling.
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aitg_admin} -d ${POSTGRES_DB:-aitg}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - aitg-net
+
+  migrate:
+    # Applies db/migrations/*.sql to Postgres, records applied filenames in
+    # the schema_migrations table, and exits. Idempotent — re-running is a
+    # no-op. See ../db/migrate.sh.
+    # PROD: sysadmin runs migrate.sh once per release; this service is the
+    # local equivalent.
+    image: postgres:18.4-alpine
+    container_name: aitg-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-aitg_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aitg}
+    volumes:
+      - ../db:/db:ro
+    entrypoint: ["bash", "/db/migrate.sh"]
+    command: ["up"]
+    restart: "no"
+    networks:
+      - aitg-net
+
+  litellm:
+    # LiteLLM proxy + psycopg layered on top so the telemetry adapter can
+    # write to Postgres. `main-stable` is the upstream's tagged stable
+    # channel. PROD: same base image, pinned to a specific digest for
+    # reproducibility, with the same Dockerfile run by the CI pipeline.
+    build:
+      context: .
+      dockerfile: litellm.Dockerfile
+    image: aitg-litellm:local
+    container_name: aitg-litellm
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      # Auth header callers send as `Authorization: Bearer <LITELLM_MASTER_KEY>`.
+      # Must start with `sk-`. Used by the autotester and by admin tools.
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY required — see .env.example}
+      # Encrypts upstream provider keys (e.g. OPENAI_API_KEY) at rest in the
+      # LiteLLM-owned tables. Rotation rotates the column ciphertext.
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?LITELLM_SALT_KEY required — see .env.example}
+      # Connection string used by LiteLLM's Prisma client. LiteLLM auto-runs
+      # `prisma migrate deploy` on container start, creating its own tables.
+      # Our 5 tables live in the same database but in a separate schema,
+      # owned by the application role.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-aitg_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aitg}
+      # Same connection string under a name LiteLLM does not touch. LiteLLM's
+      # Prisma client mutates DATABASE_URL in-process at runtime to add
+      # connection_limit / pool_timeout, which psycopg rejects with
+      # `invalid URI query parameter`. Our adapter reads this instead.
+      AITG_DATABASE_URL: postgresql://${POSTGRES_USER:-aitg_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aitg}
+      # Enables runtime model management via the /ui admin panel and API.
+      STORE_MODEL_IN_DB: "True"
+      # Upstream provider keys. Optional locally — the stack starts without
+      # them; chat completions fail until one is set.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # The telemetry adapter Fernet-encrypts a sentinel string for the
+      # api_keys row that anchors usage_logs.api_key_id. Same key as the tests
+      # service (see lib/encryption.py).
+      AITG_ENCRYPTION_KEY: ${AITG_ENCRYPTION_KEY}
+      # Optional override; when unset, the adapter fetches USD→CAD daily from
+      # the Bank of Canada Valet API (lib/cad_fx.py).
+      AITG_USD_TO_CAD_RATE: ${AITG_USD_TO_CAD_RATE:-}
+      # Where the post-call hook parks rows it could not write to Postgres.
+      AITG_DEAD_LETTER_PATH: /var/lib/aitg/dead-letter.jsonl
+      # Gatekeeper-enforced cap on every chat completion. Unset → 4096.
+      AITG_MAX_TOKENS_CEILING: ${AITG_MAX_TOKENS_CEILING:-4096}
+    ports:
+      # LOCAL ASSUMPTION (admin UI exposure): bound to 127.0.0.1 so
+      # the admin UI at /ui is reachable only from the developer's machine.
+      # PROD: gate behind VPN or jump host; never expose /ui to the public
+      # internet without further auth in front.
+      - "127.0.0.1:4000:4000"
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml:ro
+      # Callback modules referenced by litellm_settings.callbacks. Mounted at
+      # the proxy working dir (/app) so `import <module>` resolves.
+      - ../lib/attribution_guard.py:/app/attribution_guard.py:ro
+      - ../lib/gatekeeper.py:/app/gatekeeper.py:ro
+      - ../lib/telemetry_adapter.py:/app/telemetry_adapter.py:ro
+      - ../lib/cad_fx.py:/app/cad_fx.py:ro
+      - ../lib/encryption.py:/app/encryption.py:ro
+      # Durable spool for rows the adapter could not write to Postgres.
+      - aitg-deadletter:/var/lib/aitg
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    healthcheck:
+      # The LiteLLM image is Wolfi-based and ships without `wget` or `curl`.
+      # Python is always present (it's a Python app), so we use urllib.
+      test: ["CMD", "python3", "-c", "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness', timeout=3).getcode() == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - aitg-net
+
+  tests:
+    # Pytest runner. Started on demand with `docker compose run --rm tests`.
+    # Connects to Postgres on the internal network. Independent of LiteLLM —
+    # the test suite only exercises the database layer.
+    profiles: ["tests"]   # excluded from default `up`; only runs via --profile
+    image: python:3.12-slim
+    container_name: aitg-tests
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-aitg_admin}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-aitg}
+      AITG_ENCRYPTION_KEY: ${AITG_ENCRYPTION_KEY}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ..:/app:ro                                    # whole project, read-only
+      - aitg-pip-cache:/root/.cache/pip               # speed up reruns
+    working_dir: /app
+    entrypoint: ["bash", "-c"]
+    command: ["pip install -q -r requirements.txt && pytest -v tests/"]
+    networks:
+      - aitg-net
+
+# Isolated bridge network. The two services see each other by container name.
+# PROD: equivalent isolation provided by the platform's networking layer.
+networks:
+  aitg-net:
+    driver: bridge
+
+# Named volume keeps the Postgres data across `docker compose down` runs.
+# `docker compose down -v` wipes it.
+# PROD: backed by sysadmin's storage tier with a backup cron.
+volumes:
+  aitg-postgres-data:
+    name: aitg-postgres-data
+  aitg-pip-cache:
+    name: aitg-pip-cache
+  # Dead-letter spool survives litellm container restarts but is wiped by
+  # `docker compose down -v`. PROD: sysadmin-managed durable mount.
+  aitg-deadletter:
+    name: aitg-deadletter

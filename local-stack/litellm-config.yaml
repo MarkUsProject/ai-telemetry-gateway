@@ -1,0 +1,51 @@
+# LiteLLM proxy configuration for local development.
+#
+# Reference: https://docs.litellm.ai/docs/proxy/config_settings
+
+model_list:
+  # The model list is intentionally narrow. Wide-open lists invite future
+  # surprise spending.
+  #
+  # PROD: the authoritative list of models the UofT OpenAI contract permits
+  # lives in the project plan SharePoint doc. Mirror it here exactly.
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      mock_response: "Mock reply (gpt-4o-mini is in mock mode for local testing)."
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-4o-mini-mock
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+      mock_response: "Mock reply for local end-to-end testing."
+
+general_settings:
+  # LiteLLM enforces this header on every request. The autotester will send
+  # `Authorization: Bearer <virtual-key>` where the virtual key is minted
+  # against this master key via the /ui admin panel.
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  # Retry transient failures (5xx, rate limits) with exponential backoff.
+  # LiteLLM owns upstream retries; the autotester does not double-retry on
+  # behalf of upstream errors.
+  num_retries: 3
+  request_timeout: 600
+  # Three custom callbacks bracket every billable call. Order matters for
+  # the pre-call chain — LiteLLM runs them in list order:
+  #   * attribution_guard — rejects calls missing the four NOT NULL
+  #     attribution fields before they reach any DB or upstream.
+  #   * gatekeeper — enforces max_tokens, kill switches, term and course
+  #     budgets. Also writes the slotted counter on success.
+  #   * telemetry_adapter — writes one usage_logs row per successful call,
+  #     USD→CAD via the Bank of Canada rate, dead-letter on DB failure.
+  # Modules are mounted at /app (see docker-compose.yml).
+  # Reference: https://docs.litellm.ai/docs/proxy/call_hooks
+  callbacks:
+    - attribution_guard.attribution_guard_instance
+    - gatekeeper.gatekeeper_instance
+    - telemetry_adapter.telemetry_adapter_instance
