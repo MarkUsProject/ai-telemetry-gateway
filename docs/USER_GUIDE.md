@@ -123,7 +123,7 @@ Every command and route in this part was checked against the running stack and t
 | Component | Folder on disk | How to confirm |
 |---|---|---|
 | The gateway stack | `~/work/ai-telemetry-gateway/local-stack` | `docker compose ps` shows `aitg-litellm` and `aitg-postgres` healthy |
-| The autotester | `~/work/autotesting` | Branch `phase4-litellm-attribution` present (`git branch \| grep phase4`) |
+| The autotester | `~/work/autotesting` | Branch `ai-telemetry-gateway-connection` present (`git branch \| grep telemetry`) |
 | The AI feedback library | `~/work/autograding-feedback-py` | Same branch present |
 | MarkUs | `~/work/Markus` | Same branch present |
 
@@ -195,7 +195,9 @@ curl -s -X POST http://localhost:4000/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"max_tokens":5}'
 ```
 
-With a placeholder `OPENAI_API_KEY`, the response is HTTP 401 from OpenAI — meaning the gate accepted and forwarded. Set a real `OPENAI_API_KEY` in `.env`, recreate the litellm container, and the same call returns HTTP 200 and writes a row to `usage_logs`.
+In the shipped local config, `gpt-4o-mini` has a `mock_response` set (see `litellm-config.yaml`), so this call returns **HTTP 200 with a canned reply without ever contacting OpenAI** — and still writes a row to `usage_logs`, because the success hook fires on mock responses too. That proves the gate accepted and forwarded the labeled call.
+
+To exercise a *real* upstream call, use a model with no mock (`gpt-4o`): with a placeholder `OPENAI_API_KEY` it returns HTTP 401 from OpenAI (the gate accepted and forwarded); set a real `OPENAI_API_KEY` in `.env`, recreate the litellm container, and the same call returns HTTP 200 and writes a row with the real cost.
 
 ### Step 5 — Drive each budget path with the database
 
@@ -206,11 +208,15 @@ USER=$(grep ^POSTGRES_USER= .env | cut -d= -f2-)
 PASS=$(grep ^POSTGRES_PASSWORD= .env | cut -d= -f2-)
 PSQL="PGPASSWORD=$PASS psql -h 127.0.0.1 -p 5434 -U $USER -d aitg -q"
 
-# Drop the course cap and add a spend row past it.
+# Course spend is SUM(total_cost) over usage_logs for that (instance, course_id)
+# in the active period — so to exhaust the cap you need spend on record. Insert a
+# $2.00 spend row, then drop the cap below it.
+eval "$PSQL -c \"INSERT INTO aitg.usage_logs (provider_request_id, api_key_id, instance, course_id, assignment_id, group_id, total_cost) VALUES ('manual-budget-test', (SELECT id FROM aitg.api_keys LIMIT 1), 'markus.example.edu', 12, 34, 56, 2.00);\""
 eval "$PSQL -c \"UPDATE aitg.course_budgets SET max_budget=1.00 WHERE instance='markus.example.edu' AND course_id=12;\""
-# Now the same Step 4 curl returns 400: "Course budget exhausted ..."
+# Now the same Step 4 curl returns 400: "Course budget exhausted for course_id=12: spent CAD 2.00 of CAD 1.00."
 
-# Reset.
+# Reset (delete the test spend row and restore the cap).
+eval "$PSQL -c \"DELETE FROM aitg.usage_logs WHERE provider_request_id='manual-budget-test';\""
 eval "$PSQL -c \"UPDATE aitg.course_budgets SET max_budget=100.00, is_active=TRUE, alert_sent_at=NULL WHERE instance='markus.example.edu' AND course_id=12;\""
 
 # Flip the course kill switch.
@@ -261,6 +267,18 @@ Bringing MarkUs up locally is a full Rails environment setup (`bundle install`, 
    - `prompt`, `scope`, `submission`: the usual AI feedback library choices.
    - `output`: one of `overall_comment`, `annotations`, `message`.
 5. Save.
+
+> **What `model: openai-remote` is.** This is a *provider key* in the AI feedback
+> library's `ModelFactory`, not an upstream model name. It is registered in
+> `ai_feedback/models/__init__.py` (`"openai-remote": OpenAIRemoteModel`) on the
+> `ai-telemetry-gateway-connection` branch. `OpenAIRemoteModel` subclasses `OpenAIModel`
+> but points the OpenAI client at the LiteLLM gateway (`remote_url`) instead of
+> `api.openai.com`, authenticates with the LiteLLM virtual key as
+> `Authorization: Bearer`, and forwards the `x-litellm-spend-logs-metadata`
+> attribution header. The actual upstream model (e.g. `gpt-4o-mini`) is a separate
+> value the gateway resolves from its own `model_list` in `litellm-config.yaml`.
+> (Contrast with `model: remote`/`RemoteModel`, which targets the `markus-ai-server`
+> "polymouth" proxy with a custom payload and an `X-API-KEY` header.)
 
 The autotester schema field for `remote_url` (`~/work/autotesting/server/autotest_server/testers/ai/settings_schema.json`) presents whichever URLs are in your whitelist as the drop-down choices.
 
@@ -319,7 +337,7 @@ The verified count today: 57 pass, 11 skipped, against the live database. Covera
 
 | Symptom | First place to look |
 |---|---|
-| Every call returns 400 "Missing required MarkUs attribution" | The autotester is not sending the `x-litellm-spend-logs-metadata` header. Check the AI tester is on the `phase4-litellm-attribution` branch and `model: openai-remote` is set. |
+| Every call returns 400 "Missing required MarkUs attribution" | The autotester is not sending the `x-litellm-spend-logs-metadata` header. Check the AI tester is on the `ai-telemetry-gateway-connection` branch and `model: openai-remote` is set. |
 | Every call returns 400 "Gateway temporarily unavailable" | Database is unreachable from the litellm container. `docker compose logs litellm` shows the exception. |
 | Costs read as 0 | `OPENAI_API_KEY` is unset or fake; OpenAI returned 401 and the success hook did not fire. |
 | Alert email never arrives | The gatekeeper stamps `alert_sent_at` but the MarkUs mailer wiring is the next step. |
