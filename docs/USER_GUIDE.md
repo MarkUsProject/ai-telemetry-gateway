@@ -261,17 +261,27 @@ Bringing MarkUs up locally is a full Rails environment setup (`bundle install`, 
 1. As an instructor, open the assignment.
 2. Go to **Automated Tests → Manage**. The Rails route is `GET /courses/:course_id/assignments/:assignment_id/automated_tests/manage`.
 3. Add a tester of type **ai**.
-4. In the test group `config`, set:
+4. Set **AI Feedback library version** to `ai-telemetry-gateway-connection`. When the
+   settings save, the autotester builds the tester's virtualenv by installing
+   `git+https://github.com/MarkUsProject/ai-autograding-feedback.git@<that value>`.
+   The default `main` does not have the `openai-remote` provider yet, so leaving it
+   unchanged fails at run time with
+   `argument --model: invalid choice: 'openai-remote'`.
+5. In the test group `config`, set:
    - `model`: `openai-remote`
    - `remote_url`: the gateway URL from your whitelist, for example `http://localhost:4000/v1`
-   - `prompt`, `scope`, `submission`: the usual AI feedback library choices.
+   - `prompt`, `submission`: the usual AI feedback library choices.
+   - `scope`: `code` or `text`. The image path does not send `max_tokens` yet,
+     so the gateway rejects `scope: image` with 400 "max_tokens is required".
    - `output`: one of `overall_comment`, `annotations`, `message`.
-5. Save.
+6. Save.
 
 > **What `model: openai-remote` is.** This is a *provider key* in the AI feedback
 > library's `ModelFactory`, not an upstream model name. It is registered in
 > `ai_feedback/models/__init__.py` (`"openai-remote": OpenAIRemoteModel`) on the
-> `ai-telemetry-gateway-connection` branch. `OpenAIRemoteModel` subclasses `OpenAIModel`
+> `ai-telemetry-gateway-connection` branch — a companion pull request to that
+> library, not yet on `main`. Until it merges, the version field in step 4 is what
+> makes the provider available. `OpenAIRemoteModel` subclasses `OpenAIModel`
 > but points the OpenAI client at the LiteLLM gateway (`remote_url`) instead of
 > `api.openai.com`, authenticates with the LiteLLM virtual key as
 > `Authorization: Bearer`, and forwards the `x-litellm-spend-logs-metadata`
@@ -279,6 +289,17 @@ Bringing MarkUs up locally is a full Rails environment setup (`bundle install`, 
 > value the gateway resolves from its own `model_list` in `litellm-config.yaml`.
 > (Contrast with `model: remote`/`RemoteModel`, which targets the `markus-ai-server`
 > "polymouth" proxy with a custom payload and an `X-API-KEY` header.)
+
+> **Authentication.** The tester process must see `LITELLM_API_KEY` — the LiteLLM
+> virtual key the gateway accepts as `Authorization: Bearer`. For local testing the
+> master key in `local-stack/.env` works. The AI tester calls `load_dotenv()`, so the
+> key can sit in the autotester's `.env` the same way `REMOTE_API_KEY` does for
+> polymouth. Without it every run errors with `LITELLM_API_KEY is not set`.
+
+> **Reply-size limit.** The gateway rejects calls that do not state `max_tokens`
+> (see Part 2). The autotester's tester config has no field for model options, so
+> `OpenAIRemoteModel` sends `max_tokens=1024` on its own when the caller does not
+> pick a value. The gateway ceiling is 4096.
 
 The autotester schema field for `remote_url` (`~/work/autotesting/server/autotest_server/testers/ai/settings_schema.json`) presents whichever URLs are in your whitelist as the drop-down choices.
 
@@ -337,6 +358,9 @@ The verified count today: 57 pass, 11 skipped, against the live database. Covera
 
 | Symptom | First place to look |
 |---|---|
+| `argument --model: invalid choice: 'openai-remote'` | The tester virtualenv installed `ai_feedback` from a ref without the provider (the default is `main`). Set **AI Feedback library version** to `ai-telemetry-gateway-connection` in the tester settings and save again so the virtualenv rebuilds. |
+| `LITELLM_API_KEY is not set` | Put the LiteLLM virtual key in the autotester's `.env` (or the worker environment); the AI tester loads it with `load_dotenv()`. |
+| 400 "max_tokens is required" | The tester virtualenv has an `ai_feedback` build from before `OpenAIRemoteModel` defaulted `max_tokens`. Rebuild it from the `ai-telemetry-gateway-connection` branch (step 8). |
 | Every call returns 400 "Missing required MarkUs attribution" | The autotester is not sending the `x-litellm-spend-logs-metadata` header. Check the AI tester is on the `ai-telemetry-gateway-connection` branch and `model: openai-remote` is set. |
 | Every call returns 400 "Gateway temporarily unavailable" | Database is unreachable from the litellm container. `docker compose logs litellm` shows the exception. |
 | Costs read as 0 | `OPENAI_API_KEY` is unset or fake; OpenAI returned 401 and the success hook did not fire. |
