@@ -69,6 +69,77 @@ curl -sS http://localhost:4000/v1/chat/completions \
 
 Admin UI: open `http://localhost:4000/ui` and sign in with the master key.
 
+## Make a key for callers
+
+Every call to the proxy carries a key. Use the master key for local tests. Make
+a virtual key for anything you share.
+
+**The master key** is the admin key. It sits in your `.env` as
+`LITELLM_MASTER_KEY`. It works on every call. Keep it private.
+
+**A virtual key** is a limited key you make from the master key. Give this one to
+the autotester. Scope it to a few models. Cap its spend. Set it to expire. Turn
+off a leaked virtual key on its own, and the master key stays safe.
+
+Make a virtual key two ways: one command, or the web page.
+
+### Option 1 — one command
+
+Ask the proxy for a key. Prove you are the admin with the master key.
+
+```bash
+MASTER=$(grep ^LITELLM_MASTER_KEY .env | cut -d= -f2-)
+
+curl -sS http://localhost:4000/key/generate \
+  -H "Authorization: Bearer $MASTER" \
+  -H "Content-Type: application/json" \
+  -d '{"models":["gpt-4o-mini","gpt-4o"],"max_budget":50,"duration":"30d","metadata":{"purpose":"autotester"}}'
+```
+
+The reply is JSON. Your new key is the `key` field. It starts with `sk-`.
+
+```json
+{"key":"sk-abc123XYZ...","models":["gpt-4o-mini","gpt-4o"],"max_budget":50}
+```
+
+Copy the key now. The full key shows once.
+
+| Field | What it controls |
+|---|---|
+| `models` | The models this key may call. Match the names in `litellm-config.yaml`. |
+| `max_budget` | A spend cap in US dollars for this key. Omit it for no cap. |
+| `duration` | How long the key lives, such as `30d` or `24h`. Omit it for no expiry. |
+| `metadata` | Free notes that tell your keys apart. |
+
+The `max_budget` field caps this one key inside LiteLLM. The gateway's course and
+term budgets live in Postgres and apply on top. A call stops at whichever cap it
+hits first.
+
+### Option 2 — the web page
+
+Make a key by clicking, with no command.
+
+1. Open `http://localhost:4000/ui`.
+2. Sign in with the master key.
+3. Open the **Keys** page.
+4. Click **Generate Key**.
+5. Pick the models the key may call.
+6. Set a budget if you want one.
+7. Submit the form.
+8. Copy the key. It starts with `sk-`. The full key shows once.
+
+### Give the key to the autotester
+
+Put the key in the autotester's `.env`:
+
+```bash
+LITELLM_API_KEY=sk-abc123XYZ...
+```
+
+The AI tester reads it with `load_dotenv()` and sends it as
+`Authorization: Bearer`. Without it, every run fails with `LITELLM_API_KEY is
+not set`.
+
 ## Stopping
 
 ```bash

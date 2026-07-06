@@ -10,4 +10,4 @@ parameters, and the index it relies on documented at the top.
 | `global_spend.sql` | Sum the 10 slot rows for a period to get total CAD spent | Gatekeeper, every chat completion |
 | `course_spend.sql` | Sum `usage_logs.total_cost` for a course within the period | Gatekeeper, after the global check passes |
 
-These queries are also the foundation of any future admin dashboard.
+An admin dashboard would reuse these same queries.

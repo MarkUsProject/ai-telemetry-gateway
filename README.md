@@ -16,7 +16,7 @@ ai-telemetry-gateway/
 
 ## Status
 
-The gateway is implemented and validated end-to-end against a local docker-compose stack: MarkUs → autotester → AI feedback library → LiteLLM proxy → mock or OpenAI → PostgreSQL ledger. See `docs/USER_GUIDE.md` for how to run and test it.
+The gateway works end-to-end on a local docker-compose stack: MarkUs → autotester → AI feedback library → LiteLLM proxy → mock or OpenAI → PostgreSQL ledger. See `docs/USER_GUIDE.md` for how to run and test it.
 
 ## Where this fits in the larger system
 

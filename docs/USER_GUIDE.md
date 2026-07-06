@@ -1,6 +1,6 @@
 # AI Grading Gateway — Overview, Concepts, and How to Test
 
-This guide has three parts. Part 1 explains what the system does with no technical detail. Part 2 explains the same thing with a little more depth. Part 3 walks through setting it up and testing it. Every step in Part 3 was checked against the running stack before being written.
+This guide has three parts. Part 1 explains what the system does with no technical detail. Part 2 explains the same thing with a little more depth. Part 3 walks through setting it up and testing it. Every step in Part 3 matches the running stack.
 
 ---
 
@@ -102,7 +102,7 @@ The term total comes from summing ten rows ("slots") for the active term. Every 
 | `course_budgets.is_active` | Admin | Per-course kill switch |
 | `api_keys.is_active` | Admin | Kill switch for the upstream OpenAI key |
 
-The alert fires once per crossing. The system stamps a column the first time a course passes its threshold; later calls see the stamp and stay quiet. A new term needs an admin to clear the stamp.
+The alert fires once per crossing. The system stamps a column the first time a course passes its threshold; later calls see the stamp and stay quiet. A new term requires an admin to clear the stamp.
 
 ### Reply-size limit
 
@@ -116,9 +116,9 @@ Every layer halts on failure rather than passing the call through. If the databa
 
 ## Part 3 — How to set it up and test it
 
-Every command and route in this part was checked against the running stack and the source repos before being written.
+Every command and route in this part matches the running stack and the source repos.
 
-### What you need before you start
+### Before you start
 
 | Component | Folder on disk | How to confirm |
 |---|---|---|
@@ -209,7 +209,7 @@ PASS=$(grep ^POSTGRES_PASSWORD= .env | cut -d= -f2-)
 PSQL="PGPASSWORD=$PASS psql -h 127.0.0.1 -p 5434 -U $USER -d aitg -q"
 
 # Course spend is SUM(total_cost) over usage_logs for that (instance, course_id)
-# in the active period — so to exhaust the cap you need spend on record. Insert a
+# in the active period — so to exhaust the cap you must have spend on record. Insert a
 # $2.00 spend row, then drop the cap below it.
 eval "$PSQL -c \"INSERT INTO aitg.usage_logs (provider_request_id, api_key_id, instance, course_id, assignment_id, group_id, total_cost) VALUES ('manual-budget-test', (SELECT id FROM aitg.api_keys LIMIT 1), 'markus.example.edu', 12, 34, 56, 2.00);\""
 eval "$PSQL -c \"UPDATE aitg.course_budgets SET max_budget=1.00 WHERE instance='markus.example.edu' AND course_id=12;\""
@@ -294,7 +294,8 @@ Bringing MarkUs up locally is a full Rails environment setup (`bundle install`, 
 > virtual key the gateway accepts as `Authorization: Bearer`. For local testing the
 > master key in `local-stack/.env` works. The AI tester calls `load_dotenv()`, so the
 > key can sit in the autotester's `.env` the same way `REMOTE_API_KEY` does for
-> polymouth. Without it every run errors with `LITELLM_API_KEY is not set`.
+> polymouth. Without it every run errors with `LITELLM_API_KEY is not set`. To
+> make that key, see "Make a key for callers" in `local-stack/README.md`.
 
 > **Reply-size limit.** The gateway rejects calls that do not state `max_tokens`
 > (see Part 2). The autotester's tester config has no field for model options, so

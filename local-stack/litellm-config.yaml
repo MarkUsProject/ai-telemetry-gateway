@@ -24,9 +24,9 @@ model_list:
       mock_response: "Mock reply for local end-to-end testing."
 
 general_settings:
-  # LiteLLM enforces this header on every request. The autotester will send
-  # `Authorization: Bearer <virtual-key>` where the virtual key is minted
-  # against this master key via the /ui admin panel.
+  # LiteLLM enforces this header on every request. The autotester sends
+  # `Authorization: Bearer <virtual-key>`. Make a virtual key from this master
+  # key with POST /key/generate or the /ui panel — see local-stack/README.md.
   master_key: os.environ/LITELLM_MASTER_KEY
 
 litellm_settings:
