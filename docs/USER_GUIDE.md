@@ -321,6 +321,12 @@ The autotester schema field for `remote_url` (`~/work/autotesting/server/autotes
 
    A row appears with the four labels and the CAD cost.
 
+   With caching turned on, re-running the same test on the same submission
+   adds zero new rows. LiteLLM replays the saved reply, meaning that the call
+   costs zero and leaves the ledger unchanged. The log says `served from cache`
+   each time. This stack ships with caching off, meaning that every re-run
+   bills and logs.
+
 ### Step 10 — Drive the alert path
 
 Set the alert threshold low so the next call crosses it:
@@ -353,7 +359,7 @@ AITG_TEST_DATABASE_URL="$URL" AITG_ENCRYPTION_KEY="$KEY" \
   .venv/bin/python -m pytest tests/ -q
 ```
 
-The verified count today: 57 pass, 11 skipped, against the live database. Coverage spans the schema, role privileges, encryption, the attribution guard, the telemetry adapter, the gatekeeper, the CAD FX cascade, the dead-letter drain, and the three health-check queries.
+The verified count today: 75 pass against the live database, or 62 pass and 13 skipped without it. Coverage spans the schema, role privileges, encryption, the attribution guard, the telemetry adapter, the gatekeeper, the CAD FX cascade, the dead-letter drain, and the three health-check queries.
 
 ### Where to look when something goes wrong
 
@@ -364,5 +370,6 @@ The verified count today: 57 pass, 11 skipped, against the live database. Covera
 | 400 "max_tokens is required" | The tester virtualenv has an `ai_feedback` build from before `OpenAIRemoteModel` defaulted `max_tokens`. Rebuild it from the `ai-telemetry-gateway-connection` branch (step 8). |
 | Every call returns 400 "Missing required MarkUs attribution" | The autotester is not sending the `x-litellm-spend-logs-metadata` header. Check the AI tester is on the `ai-telemetry-gateway-connection` branch and `model: openai-remote` is set. |
 | Every call returns 400 "Gateway temporarily unavailable" | Database is unreachable from the litellm container. `docker compose logs litellm` shows the exception. |
+| Zero new rows after re-running the same test | Check `docker logs aitg-litellm`. A line reading `served from cache ... the ledger is correct` shows the reply was replayed at zero cost, meaning that the absent row is correct. A line reading `reusing request ids ... under-reporting spend` points to a real fault. |
 | Costs read as 0 | `OPENAI_API_KEY` is unset or fake; OpenAI returned 401 and the success hook did not fire. |
 | Alert email never arrives | The gatekeeper stamps `alert_sent_at` but the MarkUs mailer wiring is the next step. |

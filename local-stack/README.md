@@ -188,3 +188,15 @@ seconds on cold disks. Wait, then re-check `docker compose ps`.
 
 **Port already in use.** Edit `docker-compose.yml` to change the host port
 binding (left side of `127.0.0.1:5434:5432` or `127.0.0.1:4000:4000`).
+
+**Edits to `lib/*.py` require clearing the bytecode cache.** Docker Desktop
+reports a stale mtime for single-file bind mounts, meaning that Python keeps
+loading the cached bytecode. `grep` on the container path shows the new source
+while the running module still returns the old value. Clear the cache, then
+recreate the container:
+```bash
+docker exec aitg-litellm rm -rf /app/__pycache__
+docker compose up -d litellm
+```
+The `docker compose run --rm tests` path stays current; it sets
+`PYTHONDONTWRITEBYTECODE`.
