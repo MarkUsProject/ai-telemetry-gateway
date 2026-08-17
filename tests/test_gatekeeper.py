@@ -22,10 +22,21 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import attribution_guard  # noqa: E402 - imported so the package side-effect runs
 import gatekeeper  # noqa: E402
+import telemetry_adapter  # noqa: E402 - source of the api_keys row name below
+
+# The api_keys row the gatekeeper resolves on every call. Sourced from the
+# adapter so the fixture cannot drift from what the code under test looks up.
+API_KEY_NAME = telemetry_adapter._API_KEY_NAME
+
+# The live tests own this instance, so the fixture can delete its usage_logs
+# rows safely. The seeded markus.example.edu course is shared with other files
+# and accumulates rows from manual runs — deleting by that key destroys history.
+TEST_INSTANCE = "test.gatekeeper.local"
+TEST_COURSE_ID = 9012
 
 FULL_METADATA = {
-    "instance": "markus.example.edu",
-    "course_id": 12,
+    "instance": TEST_INSTANCE,
+    "course_id": TEST_COURSE_ID,
     "assignment_id": 34,
     "group_id": 56,
     "batch_id": None,
@@ -87,34 +98,63 @@ def live_env(monkeypatch, live_db_url):
 
 @pytest.fixture
 def fresh_course(live_env):
-    """Reset the seeded course budget to a clean baseline before each test."""
+    """Give each test a clean budget and zeroed counter, then restore everything.
+
+    The gatekeeper reads global state, so the tests must control it. Zeroing it
+    permanently would destroy the dev ledger, so every mutation is snapshotted.
+    """
     import psycopg
 
     with psycopg.connect(live_env) as conn, conn.cursor() as cur:
+        # Selected in restore-parameter order so teardown can hand each row
+        # straight to executemany.
+        cur.execute("SELECT current_value, period_id, slot_id FROM aitg.budget_slots")
+        slots_before = cur.fetchall()
+        cur.execute("SELECT is_active, id FROM aitg.global_budget_periods")
+        periods_before = cur.fetchall()
+        cur.execute("SELECT is_active, id FROM aitg.api_keys WHERE key_name = %s", (API_KEY_NAME,))
+        keys_before = cur.fetchall()
+
         cur.execute(
             """
-            UPDATE aitg.course_budgets
-               SET max_budget = 100.00,
-                   alert_threshold = 80.00,
-                   is_active = TRUE,
-                   alert_sent_at = NULL
-             WHERE instance = 'markus.example.edu' AND course_id = 12
-            """
+            INSERT INTO aitg.course_budgets
+                        (instance, course_id, max_budget, alert_threshold, is_active, alert_sent_at)
+                 VALUES (%s, %s, 100.00, 80.00, TRUE, NULL)
+            ON CONFLICT (instance, course_id) DO UPDATE
+                    SET max_budget = 100.00, alert_threshold = 80.00,
+                        is_active = TRUE, alert_sent_at = NULL
+            """,
+            (TEST_INSTANCE, TEST_COURSE_ID),
+        )
+        cur.execute("UPDATE aitg.budget_slots SET current_value = 0")
+        cur.execute("UPDATE aitg.api_keys SET is_active = TRUE WHERE key_name = %s", (API_KEY_NAME,))
+        cur.execute("UPDATE aitg.global_budget_periods SET is_active = TRUE")
+        conn.commit()
+
+    yield
+
+    with psycopg.connect(live_env) as conn, conn.cursor() as cur:
+        cur.executemany(
+            "UPDATE aitg.budget_slots SET current_value = %s WHERE period_id = %s AND slot_id = %s",
+            slots_before,
+        )
+        cur.executemany(
+            "UPDATE aitg.global_budget_periods SET is_active = %s WHERE id = %s",
+            periods_before,
+        )
+        cur.executemany(
+            "UPDATE aitg.api_keys SET is_active = %s WHERE id = %s",
+            keys_before,
         )
         cur.execute(
-            "UPDATE aitg.budget_slots SET current_value = 0"
+            "DELETE FROM aitg.usage_logs WHERE instance = %s AND course_id = %s",
+            (TEST_INSTANCE, TEST_COURSE_ID),
         )
         cur.execute(
-            "UPDATE aitg.api_keys SET is_active = TRUE WHERE key_name = 'UofT OpenAI'"
-        )
-        cur.execute(
-            "DELETE FROM aitg.usage_logs WHERE instance = 'markus.example.edu' AND course_id = 12"
-        )
-        cur.execute(
-            "UPDATE aitg.global_budget_periods SET is_active = TRUE"
+            "DELETE FROM aitg.course_budgets WHERE instance = %s AND course_id = %s",
+            (TEST_INSTANCE, TEST_COURSE_ID),
         )
         conn.commit()
-    yield
 
 
 def _call_hook(data):
@@ -148,7 +188,8 @@ def test_course_cap_exhausted_rejected(fresh_course, live_env):
     with psycopg.connect(live_env) as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE aitg.course_budgets SET max_budget = 1.00 "
-            "WHERE instance = 'markus.example.edu' AND course_id = 12"
+            "WHERE instance = %s AND course_id = %s",
+            (TEST_INSTANCE, TEST_COURSE_ID),
         )
         cur.execute(
             """
@@ -156,10 +197,10 @@ def test_course_cap_exhausted_rejected(fresh_course, live_env):
                 course_id, assignment_id, group_id, input_tokens, output_tokens,
                 unit_price, total_cost)
               VALUES (%s,
-                (SELECT id FROM aitg.api_keys WHERE key_name = 'UofT OpenAI'),
-                'markus.example.edu', 12, 34, 56, 100, 50, 0.01, 1.50)
+                (SELECT id FROM aitg.api_keys WHERE key_name = %s),
+                %s, %s, 34, 56, 100, 50, 0.01, 1.50)
             """,
-            (f"cap_test_{uuid.uuid4().hex}",),
+            (f"cap_test_{uuid.uuid4().hex}", API_KEY_NAME, TEST_INSTANCE, TEST_COURSE_ID),
         )
         conn.commit()
 
@@ -191,7 +232,8 @@ def test_course_kill_switch_rejected(fresh_course, live_env):
     with psycopg.connect(live_env) as conn, conn.cursor() as cur:
         cur.execute(
             "UPDATE aitg.course_budgets SET is_active = FALSE "
-            "WHERE instance = 'markus.example.edu' AND course_id = 12"
+            "WHERE instance = %s AND course_id = %s",
+            (TEST_INSTANCE, TEST_COURSE_ID),
         )
         conn.commit()
 
@@ -215,7 +257,7 @@ def test_api_key_kill_switch_rejected(fresh_course, live_env):
 
     with psycopg.connect(live_env) as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE aitg.api_keys SET is_active = FALSE WHERE key_name = 'UofT OpenAI'"
+            "UPDATE aitg.api_keys SET is_active = FALSE WHERE key_name = %s", (API_KEY_NAME,)
         )
         conn.commit()
 
@@ -260,7 +302,8 @@ def test_alert_threshold_fires_once_and_stamps_db(fresh_course, live_env):
         # but stays under the cap (set high so we test alert, not budget).
         cur.execute(
             "UPDATE aitg.course_budgets SET max_budget = 100.00, alert_threshold = 1.00 "
-            "WHERE instance = 'markus.example.edu' AND course_id = 12"
+            "WHERE instance = %s AND course_id = %s",
+            (TEST_INSTANCE, TEST_COURSE_ID),
         )
         cur.execute(
             """
@@ -268,10 +311,10 @@ def test_alert_threshold_fires_once_and_stamps_db(fresh_course, live_env):
                 course_id, assignment_id, group_id, input_tokens, output_tokens,
                 unit_price, total_cost)
               VALUES (%s,
-                (SELECT id FROM aitg.api_keys WHERE key_name = 'UofT OpenAI'),
-                'markus.example.edu', 12, 34, 56, 100, 50, 0.02, 2.50)
+                (SELECT id FROM aitg.api_keys WHERE key_name = %s),
+                %s, %s, 34, 56, 100, 50, 0.02, 2.50)
             """,
-            (f"alert_{uuid.uuid4().hex}",),
+            (f"alert_{uuid.uuid4().hex}", API_KEY_NAME, TEST_INSTANCE, TEST_COURSE_ID),
         )
         conn.commit()
 
@@ -280,7 +323,8 @@ def test_alert_threshold_fires_once_and_stamps_db(fresh_course, live_env):
     with psycopg.connect(live_env) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT alert_sent_at FROM aitg.course_budgets "
-            "WHERE instance = 'markus.example.edu' AND course_id = 12"
+            "WHERE instance = %s AND course_id = %s",
+            (TEST_INSTANCE, TEST_COURSE_ID),
         )
         first_stamp = cur.fetchone()[0]
         assert first_stamp is not None
@@ -290,7 +334,8 @@ def test_alert_threshold_fires_once_and_stamps_db(fresh_course, live_env):
     with psycopg.connect(live_env) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT alert_sent_at FROM aitg.course_budgets "
-            "WHERE instance = 'markus.example.edu' AND course_id = 12"
+            "WHERE instance = %s AND course_id = %s",
+            (TEST_INSTANCE, TEST_COURSE_ID),
         )
         second_stamp = cur.fetchone()[0]
     assert first_stamp == second_stamp

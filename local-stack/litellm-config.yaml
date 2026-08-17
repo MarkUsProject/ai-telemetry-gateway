@@ -13,10 +13,14 @@ model_list:
       model: openai/gpt-4o-mini
       api_key: os.environ/OPENAI_API_KEY
       mock_response: "Mock reply (gpt-4o-mini is in mock mode for local testing)."
+  # Routed through the UofT ITS AI gateway ("AI Kitchen"). That gateway is
+  # itself a LiteLLM proxy, so it returns the standard `usage` object the
+  # telemetry adapter needs for cost math. Reaching it requires the VPN.
   - model_name: gpt-4o
     litellm_params:
       model: openai/gpt-4o
-      api_key: os.environ/OPENAI_API_KEY
+      api_base: https://api.ai.its.utoronto.ca/v1
+      api_key: os.environ/UOFT_OPENAI_KEY
   - model_name: gpt-4o-mini-mock
     litellm_params:
       model: openai/gpt-4o-mini

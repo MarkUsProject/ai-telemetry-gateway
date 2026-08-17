@@ -107,6 +107,9 @@ services:
       # Upstream provider keys. Optional locally — the stack starts without
       # them; chat completions fail until one is set.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # UofT ITS AI gateway key, used by the gpt-4o model entry. Reaching the
+      # gateway also requires the VPN. Optional locally, same as above.
+      UOFT_OPENAI_KEY: ${UOFT_OPENAI_KEY:-}
       # The telemetry adapter Fernet-encrypts a sentinel string for the
       # api_keys row that anchors usage_logs.api_key_id. Same key as the tests
       # service (see lib/encryption.py).

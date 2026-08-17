@@ -34,27 +34,36 @@ def test_active_period_returns_empty_when_none_active(conn):
     assert rows == [], "expected empty result when no period is active"
 
 
-def test_global_spend_returns_zero_after_seed(conn):
-    """Validation hook: 10 slots seeded at 0; SUM must be 0 (sentinel of 1 is a bug)."""
+def test_global_spend_returns_zero_when_slots_are_empty(conn):
+    """Validation hook: 10 slots at 0 must SUM to 0 (a sentinel of 1 is a bug).
+
+    The zeroing is explicit: a used dev database carries real slot values, and
+    the conn fixture rolls this back after the test.
+    """
     period_id = conn.execute(
         "SELECT id FROM global_budget_periods WHERE period_code = 'local_dev'"
     ).fetchone()[0]
+    conn.execute("UPDATE budget_slots SET current_value = 0 WHERE period_id = %s", (period_id,))
     total = conn.execute(_load("global_spend.sql"), (period_id,)).fetchone()[0]
     assert total == 0
 
 
 def test_global_spend_reflects_slot_increments(conn):
-    """After a worker bumps a slot, the SUM reflects it."""
+    """After a worker bumps a slot, the SUM reflects it.
+
+    Asserted as a delta so the test holds on a dev database carrying spend.
+    """
     period_id = conn.execute(
         "SELECT id FROM global_budget_periods WHERE period_code = 'local_dev'"
     ).fetchone()[0]
+    before = conn.execute(_load("global_spend.sql"), (period_id,)).fetchone()[0]
     conn.execute(
         "UPDATE budget_slots SET current_value = current_value + 0.12345 "
         "WHERE period_id = %s AND slot_id = 3",
         (period_id,),
     )
     total = conn.execute(_load("global_spend.sql"), (period_id,)).fetchone()[0]
-    assert total == Decimal("0.12345")
+    assert total - before == Decimal("0.12345")
 
 
 def test_course_spend_sums_usage_logs(conn):

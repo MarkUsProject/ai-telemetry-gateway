@@ -178,7 +178,12 @@ def resolve_api_key_id(conn) -> int:
         return cur.fetchone()[0]
 
 
-def _insert_row(conn, row: dict, api_key_id: int) -> None:
+def _insert_row(conn, row: dict, api_key_id: int) -> bool:
+    """Insert one usage_logs row; False when the UNIQUE constraint swallowed it.
+
+    ``ON CONFLICT DO NOTHING`` is silent, so an upstream reusing request ids
+    looks exactly like a successful write. Report the difference instead.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -197,6 +202,7 @@ def _insert_row(conn, row: dict, api_key_id: int) -> None:
             """,
             {**row, "api_key_id": api_key_id},
         )
+        return cur.rowcount == 1
 
 
 def _append_dead_letter(row: dict) -> None:
@@ -212,12 +218,22 @@ def persist(row: dict) -> bool:
 
     Returns True if the row landed in the database, False if it landed in the
     dead letter. Either way the data is durable.
+
+    A duplicate still counts as landed — the ledger already holds that call —
+    and warns, because a run of them means spend is being under-reported.
     """
     try:
         with _open_db() as conn:
             api_key_id = resolve_api_key_id(conn)
-            _insert_row(conn, row, api_key_id)
+            inserted = _insert_row(conn, row, api_key_id)
             conn.commit()
+        if not inserted:
+            _LOG.warning(
+                "usage_logs row skipped: provider_request_id=%s is already recorded "
+                "(instance=%s course_id=%s). Repeated skips mean the upstream is "
+                "reusing request ids and the ledger is under-reporting spend.",
+                row["provider_request_id"], row["instance"], row["course_id"],
+            )
         return True
     except Exception:  # noqa: BLE001 - DB unreachable, schema drift, anything
         _LOG.exception("usage_logs write failed; appending to dead letter")

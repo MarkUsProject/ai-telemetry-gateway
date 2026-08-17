@@ -184,14 +184,10 @@ def live_db_url():
     return url
 
 
-def test_persist_writes_one_row_to_live_db(live_db_url, monkeypatch):
-    monkeypatch.setenv("DATABASE_URL", live_db_url)
-    # AITG_ENCRYPTION_KEY must already be set in the env for the api_keys
-    # sentinel encryption; the test runner inherits it from local-stack/.env.
-
-    unique_id = f"test_{uuid.uuid4().hex}"
-    row = {
-        "provider_request_id": unique_id,
+def _live_row(provider_request_id: str) -> dict:
+    """A complete usage_logs row shaped like one ``build_row`` produces."""
+    return {
+        "provider_request_id": provider_request_id,
         "instance": "markus.example.edu",
         "course_id": 12, "assignment_id": 34, "group_id": 56,
         "batch_id": None, "requester_role": "student",
@@ -199,7 +195,15 @@ def test_persist_writes_one_row_to_live_db(live_db_url, monkeypatch):
         "output_tokens": 50, "reasoning_tokens": 10,
         "unit_price": 0.0001, "total_cost": 0.015,
     }
-    assert ta.persist(row) is True
+
+
+def test_persist_writes_one_row_to_live_db(live_db_url, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", live_db_url)
+    # AITG_ENCRYPTION_KEY must already be set in the env for the api_keys
+    # sentinel encryption; the test runner inherits it from local-stack/.env.
+
+    unique_id = f"test_{uuid.uuid4().hex}"
+    assert ta.persist(_live_row(unique_id)) is True
 
     import psycopg
 
@@ -216,3 +220,39 @@ def test_persist_writes_one_row_to_live_db(live_db_url, monkeypatch):
     assert landed[0] == "markus.example.edu"
     assert landed[1] == 12
     assert float(landed[2]) == pytest.approx(0.015)
+
+
+def test_duplicate_provider_request_id_warns_instead_of_vanishing(live_db_url, monkeypatch, caplog):
+    """A reused request id must not disappear without a trace.
+
+    ``ON CONFLICT DO NOTHING`` swallows the second write, so before the warning
+    the ledger silently recorded only the first call of a run.
+    """
+    monkeypatch.setenv("DATABASE_URL", live_db_url)
+
+    unique_id = f"test_{uuid.uuid4().hex}"
+
+    import psycopg
+
+    try:
+        with caplog.at_level("WARNING", logger="aitg.telemetry_adapter"):
+            assert ta.persist(_live_row(unique_id)) is True
+            # A clean insert stays quiet; without this the assertions below
+            # would also pass for an _insert_row that never reports success.
+            assert caplog.text == ""
+
+            assert ta.persist(_live_row(unique_id)) is True
+
+        with psycopg.connect(live_db_url) as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM aitg.usage_logs WHERE provider_request_id = %s",
+                (unique_id,),
+            )
+            assert cur.fetchone()[0] == 1
+    finally:
+        with psycopg.connect(live_db_url) as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM aitg.usage_logs WHERE provider_request_id = %s", (unique_id,))
+            conn.commit()
+
+    assert "already recorded" in caplog.text
+    assert unique_id in caplog.text
