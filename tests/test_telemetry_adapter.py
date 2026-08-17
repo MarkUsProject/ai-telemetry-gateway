@@ -256,3 +256,47 @@ def test_duplicate_provider_request_id_warns_instead_of_vanishing(live_db_url, m
 
     assert "already recorded" in caplog.text
     assert unique_id in caplog.text
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        ({"cache_hit": True}, True),
+        ({"litellm_params": {"cache_hit": True}}, True),
+        ({"cache_hit": False}, False),
+        ({}, False),
+    ],
+)
+def test_is_cache_hit_reads_both_litellm_shapes(kwargs, expected):
+    assert ta.is_cache_hit(kwargs) is expected
+
+
+def test_skip_reason_blames_spend_only_when_nothing_was_cached():
+    """Both branches are asserted here so they hold without a live database."""
+    assert "served from cache" in ta._skip_reason(True)
+    assert "under-reporting spend" not in ta._skip_reason(True)
+    assert "under-reporting spend" in ta._skip_reason(False)
+
+
+def test_cached_replay_says_nothing_was_billed(live_db_url, monkeypatch, caplog):
+    """A cached reply must not read as a lost row.
+
+    LiteLLM replays the stored response with its original id, so the insert
+    conflicts. No upstream call happened, so the absent row is correct.
+    """
+    monkeypatch.setenv("DATABASE_URL", live_db_url)
+    unique_id = f"test_{uuid.uuid4().hex}"
+
+    import psycopg
+
+    try:
+        assert ta.persist(_live_row(unique_id)) is True
+        with caplog.at_level("WARNING", logger="aitg.telemetry_adapter"):
+            assert ta.persist(_live_row(unique_id), cache_hit=True) is True
+    finally:
+        with psycopg.connect(live_db_url) as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM aitg.usage_logs WHERE provider_request_id = %s", (unique_id,))
+            conn.commit()
+
+    assert "served from cache" in caplog.text
+    assert "under-reporting spend" not in caplog.text

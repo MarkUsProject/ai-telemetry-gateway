@@ -213,14 +213,37 @@ def _append_dead_letter(row: dict) -> None:
         handle.write(json.dumps(envelope) + "\n")
 
 
-def persist(row: dict) -> bool:
+def _skip_reason(cache_hit: bool) -> str:
+    """Why no row was written. Cached replies are normal; repeats are not."""
+    if cache_hit:
+        return ("usage_logs row skipped: provider_request_id=%s was served from cache "
+                "(instance=%s course_id=%s). Nothing was billed, so the ledger is correct "
+                "— an identical request adds no row.")
+    return ("usage_logs row skipped: provider_request_id=%s is already recorded "
+            "(instance=%s course_id=%s). Repeated skips mean the upstream is reusing "
+            "request ids and the ledger is under-reporting spend.")
+
+
+def is_cache_hit(kwargs: dict) -> bool:
+    """True when LiteLLM replayed a stored response instead of calling upstream.
+
+    A replay bills nothing, so the missing usage_logs row is correct. Without
+    this flag a cached reply is indistinguishable from a lost row.
+    """
+    if kwargs.get("cache_hit"):
+        return True
+    params = kwargs.get("litellm_params")
+    return bool(isinstance(params, dict) and params.get("cache_hit"))
+
+
+def persist(row: dict, cache_hit: bool = False) -> bool:
     """Write the row, falling back to the dead letter on DB failure.
 
     Returns True if the row landed in the database, False if it landed in the
     dead letter. Either way the data is durable.
 
     A duplicate still counts as landed — the ledger already holds that call —
-    and warns, because a run of them means spend is being under-reported.
+    and says why it was skipped, so a missing row never looks like a fault.
     """
     try:
         with _open_db() as conn:
@@ -229,9 +252,7 @@ def persist(row: dict) -> bool:
             conn.commit()
         if not inserted:
             _LOG.warning(
-                "usage_logs row skipped: provider_request_id=%s is already recorded "
-                "(instance=%s course_id=%s). Repeated skips mean the upstream is "
-                "reusing request ids and the ledger is under-reporting spend.",
+                _skip_reason(cache_hit),
                 row["provider_request_id"], row["instance"], row["course_id"],
             )
         return True
@@ -251,7 +272,7 @@ class TelemetryAdapter(_Base):
             _LOG.exception("Skipping row: required attribution missing")
             return
         # DB write is sync psycopg; offload so we do not block the event loop.
-        await asyncio.to_thread(persist, row)
+        await asyncio.to_thread(persist, row, is_cache_hit(kwargs))
 
     async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
         # Partial-success rule: upstream failures overwhelmingly do not bill.
