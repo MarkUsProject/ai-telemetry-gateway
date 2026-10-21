@@ -1,0 +1,40 @@
+#!/bin/sh
+# daemontools run script for the AI telemetry gateway.
+#
+# Dean links the folder holding this file into /service (Email 2, step 2);
+# svscan then starts it as root and restarts it if it exits. The script loads
+# its settings, then drops to the service user before LiteLLM starts.
+#
+# Run it as Mateo for the rehearsal: started by a regular user, it skips
+# setuidgid and runs as that user.
+
+exec 2>&1
+
+# supervise runs this from the service folder; the gateway root sits one up.
+ROOT="$(cd .. && pwd -P)" || exit 1
+
+# Both files are written at install time.
+set -a
+# shellcheck disable=SC1091
+. "$ROOT/runtime.env" || exit 1
+# shellcheck disable=SC1091
+. "$ROOT/secrets.env" || exit 1
+set +a
+
+# Prisma's Node and engine caches live here. install.sh generated the client
+# against this exact path.
+HOME="$ROOT/var/home"
+# /local/bin supplies node for the Prisma CLI.
+PATH="$ROOT/venv/bin:/local/bin:/usr/bin:/bin"
+export HOME PATH
+
+# LiteLLM imports the callback modules by name from its working directory.
+cd "$ROOT/app" || exit 1
+
+# --host and --port are explicit. LISTEN_PORT avoids 4000: on a busy 4000,
+# LiteLLM jumps to a random port that Apache misses.
+set -- litellm --config "$ROOT/app/config.yaml" --host "$LISTEN_HOST" --port "$LISTEN_PORT"
+if [ "$(id -u)" = 0 ]; then
+  exec setuidgid "$SERVICE_USER" "$@"
+fi
+exec "$@"

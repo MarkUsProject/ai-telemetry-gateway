@@ -1,0 +1,28 @@
+# LiteLLM proxy configuration for staging on polymouth.
+#
+# Differs from local-stack/litellm-config.yaml in one way: it lists one paid
+# model, so every call reaches a real upstream and costs real money.
+#
+# Reference: https://docs.litellm.ai/docs/proxy/config_settings
+
+model_list:
+  # Routed through the UofT ITS AI gateway ("AI Kitchen"). polymouth reaches it
+  # without the VPN. The autotester's AI tester must set model_name: gpt-4o.
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_base: https://api.ai.its.utoronto.ca/v1
+      api_key: os.environ/UOFT_OPENAI_KEY
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  num_retries: 3
+  request_timeout: 600
+  # Order matters: LiteLLM runs the pre-call chain in list order.
+  # See local-stack/litellm-config.yaml for what each callback does.
+  callbacks:
+    - attribution_guard.attribution_guard_instance
+    - gatekeeper.gatekeeper_instance
+    - telemetry_adapter.telemetry_adapter_instance

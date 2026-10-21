@@ -1,0 +1,51 @@
+-- Creates the gateway database and its two roles on polymouth's Postgres.
+--
+-- render.py fills in the placeholders from secrets.env and writes the
+-- result to <install dir>/deploy/db-setup.sql. Dean runs that file once as
+-- the postgres superuser (Email 2, step 1):
+--
+--   sudo -u postgres psql < /data/ai-telemetry-gateway/deploy/db-setup.sql
+--
+-- It replaces local-stack/init-db.sql, which hardcodes a placeholder password
+-- and assumes the Docker image already created the database.
+--
+-- Roles:
+--   aitg_admin  owns the database and the aitg schema. LiteLLM's Prisma client
+--               connects as it, because Prisma creates its LiteLLM_* tables in
+--               `public` on every start. migrate.sh runs as it too.
+--   aitg_app    CRUD on the aitg schema. The telemetry adapter and gatekeeper
+--               connect as it through AITG_DATABASE_URL.
+--
+-- Runs once: a second run stops at CREATE ROLE, which protects a live
+-- password from a reset.
+
+\set ON_ERROR_STOP on
+
+-- Store both passwords as SCRAM hashes, matching the pg_hba.conf line that
+-- Email 2 adds, whatever the server default is.
+SET password_encryption = 'scram-sha-256';
+
+CREATE ROLE aitg_admin WITH LOGIN PASSWORD '${AITG_ADMIN_PASSWORD}';
+CREATE ROLE aitg_app   WITH LOGIN PASSWORD '${AITG_APP_PASSWORD}';
+
+-- Owning the database gives aitg_admin CREATE on `public` (Postgres 15+ makes
+-- `public` owned by pg_database_owner), which Prisma requires.
+CREATE DATABASE ${PG_DB} OWNER aitg_admin;
+REVOKE CONNECT ON DATABASE ${PG_DB} FROM PUBLIC;
+GRANT CONNECT ON DATABASE ${PG_DB} TO aitg_admin, aitg_app;
+
+\connect ${PG_DB}
+
+-- The gateway's own tables live in `aitg`, out of Prisma's reach.
+CREATE SCHEMA aitg AUTHORIZATION aitg_admin;
+GRANT USAGE ON SCHEMA aitg TO aitg_app;
+
+-- Tables and sequences that aitg_admin creates later (every migration) grant
+-- CRUD to aitg_app automatically. FOR ROLE matters: without it the default
+-- applies to objects the postgres superuser creates instead.
+ALTER DEFAULT PRIVILEGES FOR ROLE aitg_admin IN SCHEMA aitg
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO aitg_app;
+ALTER DEFAULT PRIVILEGES FOR ROLE aitg_admin IN SCHEMA aitg
+  GRANT USAGE, SELECT ON SEQUENCES TO aitg_app;
+
+ALTER ROLE aitg_app IN DATABASE ${PG_DB} SET search_path = aitg, public;

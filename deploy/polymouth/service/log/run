@@ -1,0 +1,13 @@
+#!/bin/sh
+# daemontools log script: timestamps each line, keeps 20 files of 1 MB in
+# <gateway root>/logs. Runs as the service user.
+
+# supervise runs this from service/log; the gateway root sits two up.
+ROOT="$(cd ../.. && pwd -P)" || exit 1
+# shellcheck disable=SC1091  # written at install time
+. "$ROOT/runtime.env" || exit 1
+
+if [ "$(id -u)" = 0 ]; then
+  exec setuidgid "$SERVICE_USER" multilog t s1000000 n20 "$ROOT/logs"
+fi
+exec multilog t s1000000 n20 "$ROOT/logs"

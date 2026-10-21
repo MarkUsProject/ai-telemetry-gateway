@@ -1,0 +1,17 @@
+-- Staging budget period plus its 10 slot counters.
+-- Replaces db/seed/001_initial_period_and_slots.sql (the 2020-2099 local_dev
+-- period). render.py fills the placeholders from the conf file.
+-- Idempotent: re-running leaves existing rows untouched.
+
+SET search_path TO aitg;
+
+INSERT INTO global_budget_periods (period_code, display_name, max_budget, starts_at, ends_at, is_active)
+VALUES ('${PERIOD_CODE}', '${PERIOD_NAME}', ${TERM_BUDGET_CAD}, '${PERIOD_START}', '${PERIOD_END}', TRUE)
+ON CONFLICT (period_code) DO NOTHING;
+
+INSERT INTO budget_slots (period_id, slot_id, current_value)
+SELECT gbp.id, s.slot_id, 0
+  FROM global_budget_periods gbp
+  CROSS JOIN generate_series(1, 10) AS s(slot_id)
+ WHERE gbp.period_code = '${PERIOD_CODE}'
+ON CONFLICT (period_id, slot_id) DO NOTHING;
