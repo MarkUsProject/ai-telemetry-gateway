@@ -58,12 +58,12 @@ def collect_values(template_text: str) -> dict[str, str]:
     return values
 
 
-def check_relationships() -> None:
-    """Catch settings that are each valid but wrong together."""
-    budget, alert = os.environ.get("COURSE_BUDGET_CAD"), os.environ.get("COURSE_ALERT_CAD")
+def check_relationships(values: dict[str, str]) -> None:
+    """Catch checked values that are each valid but wrong together."""
+    budget, alert = values.get("COURSE_BUDGET_CAD"), values.get("COURSE_ALERT_CAD")
     if budget and alert and Decimal(alert) >= Decimal(budget):
         sys.exit(f"error: COURSE_ALERT_CAD ({alert}) must sit below COURSE_BUDGET_CAD ({budget})")
-    start, end = os.environ.get("PERIOD_START"), os.environ.get("PERIOD_END")
+    start, end = values.get("PERIOD_START"), values.get("PERIOD_END")
     if start and end and start >= end:
         sys.exit(f"error: PERIOD_START ({start}) must come before PERIOD_END ({end})")
 
@@ -75,7 +75,7 @@ def main() -> None:
 
     text = template_path.read_text()
     values = collect_values(text)
-    check_relationships()
+    check_relationships(values)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(Template(text).substitute(values))
