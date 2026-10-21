@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared helpers for the polymouth deploy scripts. Scripts source this file.
 #
 # Every script takes a conf file (staging.conf or rehearsal.conf) as its first
