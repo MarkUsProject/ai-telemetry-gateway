@@ -9,8 +9,9 @@
 #   - may reach the two routes Apache exposes
 #   - carries an alias, so LiteLLM's key list shows it by name
 #
-# Put the printed key in the staging autotester's .env as GATEWAY_API_KEY
-# (ai_feedback/models/OpenAIRemoteModel.py reads that name).
+# Put the printed key in the staging autotester's settings.local.yml, under
+# ai_tester_env as GATEWAY_API_KEY (ai_feedback/models/OpenAIRemoteModel.py
+# reads that name).
 
 source "$(dirname "$0")/lib.sh"
 load_conf "${1:-}"

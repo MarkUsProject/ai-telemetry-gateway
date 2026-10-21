@@ -31,88 +31,85 @@ Each script takes a conf file as its first argument.
 
 The rehearsal passes when the smoke test prints `all checks passed`. It runs in `/data/otelcol`, which Mateo owns.
 
-1. On your Mac, push this branch:
+1. On your Mac, copy the committed branch to polymouth. The copy skips local edits and `.git`:
    ```
-   git push -u origin deploy/polymouth-staging
+   git archive deploy/polymouth-staging | ssh polymouth 'umask 007 && mkdir /data/otelcol/aitg-src && tar -x -C /data/otelcol/aitg-src'
    ```
-2. On polymouth, clone it:
+2. On polymouth, open the kit:
    ```
-   git clone -b deploy/polymouth-staging git@github.com:MarkUsProject/ai-telemetry-gateway.git /data/otelcol/aitg-src
    cd /data/otelcol/aitg-src/deploy/polymouth
    ```
-3. Set `LITELLM_VERSION` in the cloned `staging.conf`.
-4. Build. Write the setup file:
+3. Build. Write the setup file:
    ```
    ./install.sh rehearsal.conf
    ./make-db-setup.sh rehearsal.conf
    ```
-5. Start the throwaway database. Create the roles:
+4. Start the throwaway database. Create the roles:
    ```
    ./trial-pg.sh rehearsal.conf start
    ./trial-pg.sh rehearsal.conf setup
    ```
-6. Apply the schema and budgets:
+5. Apply the schema and budgets:
    ```
    ./db.sh rehearsal.conf up
    ./db.sh rehearsal.conf seed
    ```
-7. Start the gateway in a second terminal:
+6. Start the gateway in a second terminal:
    ```
    cd /data/otelcol/aitg-rehearsal/service && ./run
    ```
-8. Run the checks:
+7. Run the checks:
    ```
    ./smoke-test.sh rehearsal.conf gpt-4o-mini-mock
    ```
-9. Stop the gateway with Ctrl-C.
-10. Delete the rehearsal:
-    ```
-    ./trial-pg.sh rehearsal.conf destroy
-    cd ~
-    rm -rf /data/otelcol/aitg-rehearsal /data/otelcol/aitg-src
-    ```
+8. Stop the gateway with Ctrl-C.
+9. Delete the rehearsal:
+   ```
+   ./trial-pg.sh rehearsal.conf destroy
+   cd ~
+   rm -rf /data/otelcol/aitg-rehearsal /data/otelcol/aitg-src
+   ```
 
 ## Staging (Phases 0 to 3)
 
 Staging repeats the rehearsal in Dean's folder, with real budgets and the real database.
 
 1. Send Email 1. Dean creates `/data/ai-telemetry-gateway`.
-2. On polymouth, clone the branch:
+2. On your Mac, copy the committed branch into Dean's folder:
    ```
-   git clone -b deploy/polymouth-staging git@github.com:MarkUsProject/ai-telemetry-gateway.git /data/ai-telemetry-gateway/src
+   git archive deploy/polymouth-staging | ssh polymouth 'umask 007 && mkdir /data/ai-telemetry-gateway/src && tar -x -C /data/ai-telemetry-gateway/src'
+   ```
+3. On polymouth, type the UofT key at a silent prompt. Then build. The first build stores the key. Later builds keep `secrets.env`.
+   ```
    cd /data/ai-telemetry-gateway/src/deploy/polymouth
-   ```
-3. Fill in every `CHANGE_ME` in the cloned `staging.conf`.
-4. Type the UofT key at a silent prompt. Then build. The first build stores the key. Later builds keep `secrets.env`.
-   ```
    read -rs UOFT_OPENAI_KEY && export UOFT_OPENAI_KEY
    ./install.sh staging.conf
    ```
-5. Write Dean's setup file:
+4. Write Dean's setup file:
    ```
    ./make-db-setup.sh staging.conf
    ```
-6. Send Email 2. Dean:
+5. Send Email 2. Dean:
    - creates the database
    - starts the service
    - adds the Apache routes
-7. Delete the setup file. It holds both role passwords:
+6. Delete the setup file. It holds both role passwords:
    ```
    rm /data/ai-telemetry-gateway/deploy/db-setup.sql
    ```
-8. Apply the schema and budgets:
+7. Apply the schema and budgets:
    ```
    ./db.sh staging.conf up
    ./db.sh staging.conf seed
    ```
-9. Run the checks through Apache. Check 4 makes one real `gpt-4o` call of at most 5 output tokens.
+8. Run the checks through Apache. Check 4 makes one real `gpt-4o` call of at most 5 output tokens.
    ```
    ./smoke-test.sh staging.conf gpt-4o https://polymouth.teach.cs.toronto.edu
    ```
-10. Mint the autotester's key:
-    ```
-    ./make-virtual-key.sh staging.conf
-    ```
+9. Mint the autotester's key:
+   ```
+   ./make-virtual-key.sh staging.conf
+   ```
 
 ## Where to look when something breaks
 
