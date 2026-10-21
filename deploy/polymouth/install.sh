@@ -107,9 +107,10 @@ schema="$("$venv/bin/python" -c 'import litellm, pathlib; print(pathlib.Path(lit
 # Group members read and run everything; var/ and logs/ take group writes
 # (setgid keeps new files in the group). The pass changes Mateo's own files:
 # once the service runs, autotst owns its logs and caches, root owns
-# service/supervise, and chmod on those fails.
+# service/supervise, and chmod on those fails. Symlinks stay out: chgrp and
+# chmod follow them, and venv/bin/python points at root's /local/bin.
 log "setting group permissions"
-mine=(find "$INSTALL_DIR" -user "$(id -un)" -not -path '*/supervise*')
+mine=(find "$INSTALL_DIR" -user "$(id -un)" -not -type l -not -path '*/supervise*')
 "${mine[@]}" -exec chgrp "$SERVICE_USER" {} +
 "${mine[@]}" -exec chmod g+rX,o-rwx {} +
 "${mine[@]}" \( -path "$INSTALL_DIR/var*" -o -path "$INSTALL_DIR/logs*" \) -exec chmod g+w {} +
