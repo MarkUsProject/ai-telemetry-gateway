@@ -1,19 +1,21 @@
-# AI Grading Gateway — Overview, Concepts, and How to Test
+# AI Grading Gateway: Overview, Concepts, and How to Test
 
-This guide has three parts. Part 1 explains what the system does with no technical detail. Part 2 explains the same thing with a little more depth. Part 3 walks through setting it up and testing it. Every step in Part 3 matches the running stack.
+This guide has three parts. Part 1 tells what the system does in plain words, free of tech detail. Part 2 tells the same story in a little more depth. Part 3 walks through how to set it up and test it. Every step in Part 3 matches the running stack.
 
 ---
 
-## Part 1 — What we built, in plain words
+## Part 1: What we built, in plain words
 
-Every AI grading request from MarkUs passes through one gate. The gate records the request, checks the budget, and refuses requests that miss a label or break a rule.
+Every AI grading request from MarkUs passes through one gate. The gate records each request. It checks the budget. It refuses any request that lacks a label or breaks a rule.
 
 ### A walk through one request
 
-Imagine a teacher in CSC108 asks for AI feedback on Bob's assignment.
+Say a teacher in CSC108 asks for AI feedback on Bob's assignment.
 
-1. MarkUs sends the request to the autotester (the helper that runs grading).
-2. The autotester attaches four labels to the request: which MarkUs site, which course, which assignment, which student group. It also adds the batch number and whether a student or a teacher started it.
+1. MarkUs sends the request to the autotester, the helper that runs grading.
+2. The autotester puts four labels on the request: which MarkUs site, which course, which assignment, which student group. It adds two more facts:
+   - the batch number
+   - who started it, a student or a teacher
 3. The request reaches the gate.
 4. The gate runs a checklist:
    - Are all four labels there?
@@ -21,10 +23,15 @@ Imagine a teacher in CSC108 asks for AI feedback on Bob's assignment.
    - Is this course still under its budget?
    - Are the kill switches off?
    - Does the request say how long a reply can be?
-5. If any check fails, the call stops with a message that names the problem.
-6. If all checks pass, the gate sends the request to OpenAI, reads the answer, and writes one row to a logbook with the cost in Canadian dollars.
+5. If any check fails, the call stops. A message names the problem.
+6. If all checks pass, the gate does three things:
+   - It sends the request to OpenAI.
+   - It reads the answer.
+   - It writes one row to a logbook, with the cost in Canadian dollars.
 
 ### Examples of each guard
+
+Each guard sends back its own message.
 
 | What happens | What the teacher sees |
 |---|---|
@@ -43,91 +50,123 @@ Imagine a teacher in CSC108 asks for AI feedback on Bob's assignment.
 | MarkUs site, course, assignment, group | Which work the AI graded |
 | Batch | The group of students graded together |
 | Role | Student or teacher |
-| Tokens | Pieces of text the AI counts when it reads and writes |
-| Price in Canadian dollars | What the call cost, converted from US dollars at today's Bank of Canada rate |
+| Tokens | Pieces of text the AI counts as it reads and writes |
+| Price in Canadian dollars | What the call cost, turned from US dollars at today's Bank of Canada rate |
 | Time | When the call happened |
 
 ### What never happens
 
 - A call goes to OpenAI without a label.
-- A logbook row appears with no cost.
+- A logbook row appears with a blank cost.
 - A call passes when the budget is empty.
 - The system keeps going through an outage.
 
 ---
 
-## Part 2 — How it works, with a little more detail
+## Part 2: How it works, with a little more detail
 
 ### Four projects play a part
 
 | Project | Role |
 |---|---|
 | MarkUs | The grading website. Teachers and students log in here. |
-| Autotester | A helper service that runs grading jobs from MarkUs. |
+| Autotester | A helper service. It runs grading jobs from MarkUs. |
 | AI feedback library | A small program the autotester runs to talk to OpenAI. |
-| Gateway (LiteLLM + Postgres) | The new gate. Records every call and enforces budgets. |
+| Gateway (LiteLLM + Postgres) | The new gate. It records every call. It enforces budgets. |
 
 ### The gate has three checkpoints, in order
 
-1. **Attribution guard.** Reads the four labels off the request. Stops any call missing one.
-2. **Gatekeeper.** Looks up today's term budget, sums the slot counters, looks up this course's budget and its kill switch, checks the reply-size rule. Stops the call on any failure.
-3. **Telemetry adapter.** Runs after the call returns. Writes one row to `usage_logs` and adds the cost to a random "slot" so many workers can record at once without slowing each other down.
+1. **Attribution guard.** Reads the four labels off the request. Stops any call that lacks one.
+2. **Gatekeeper.** Runs the steps below. Any failure stops the call.
+   - It looks up today's term budget.
+   - It sums the slot counters.
+   - It looks up this course's budget.
+   - It looks up this course's kill switch.
+   - It checks the reply-size rule.
+3. **Telemetry adapter.** Runs after the call returns. It does two things:
+   - It writes one row to `usage_logs`.
+   - It adds the cost to a random "slot". With slots, many workers can record at once without slowing each other down.
 
 ### The logbook
 
-One row per paid call. Each row has the four labels, the batch, the role, every token count, the per-token price, the total cost in Canadian dollars, and the time. Each row carries a unique provider-side request id. If the same id arrives twice, the database refuses the duplicate.
+The logbook holds one row per paid call. Each row holds:
+
+- the four labels
+- the batch
+- the role
+- every token count
+- the per-token price
+- the total cost in Canadian dollars
+- the time
+- a unique provider-side request id
+
+If the same id arrives twice, the database refuses the second copy.
 
 ### The cost math
 
-OpenAI quotes the cost in US dollars. The gate fetches today's USD-to-CAD rate from the Bank of Canada (the same rate the U of T finance office uses) and multiplies. The rate refreshes once a day. If the Bank cannot be reached, the gate reuses the last rate it had. On a cold start with no network, a fallback of 1.36 keeps the system from losing a row.
+OpenAI quotes the cost in US dollars. The gate turns it into Canadian dollars:
 
-The total cost is `(input tokens + output tokens) × per-token price`. Cached and reasoning tokens are recorded but not billed.
+- The gate fetches today's USD-to-CAD rate from the Bank of Canada. The U of T finance office uses the same rate.
+- The gate multiplies the cost by that rate.
+- The rate refreshes once a day.
+- If the gate fails to reach the Bank, it reuses the last rate it had.
+- On a cold start without network access, a fallback rate of 1.36 keeps the system from losing a row.
+
+The total cost is `(input tokens + output tokens) × per-token price`. The row records cached and reasoning tokens. The cost leaves them out.
 
 ### When the database is down
 
-A row that cannot land in the database goes into a small file ("dead letter") instead. A separate drainer reads that file when the database returns and replays the rows. The unique request id rule prevents duplicates. No row is lost.
+Every row survives the outage. A row that fails to land in the database goes into a small file instead, called a "dead letter". When the database returns, a separate drainer reads that file. It replays the rows. The unique request id rule stops duplicates.
 
 ### How the slots work
 
-The term total comes from summing ten rows ("slots") for the active term. Every paid call adds its cost to one random slot. Ten workers can write at once without any two picking the same row. When a new term begins, writes start landing in the new term's ten slots; old rows stay as history.
+The term total is the sum of ten rows, called "slots", for the active term. Every paid call adds its cost to one random slot. Ten workers can write at once without any two picking the same row. When a new term begins, writes start landing in the new term's ten slots. Old rows stay as history.
 
 ### Budgets and kill switches
 
 | Setting | Who controls it | What it does |
 |---|---|---|
-| `global_budget_periods.max_budget` | Admin | The cap for the term in Canadian dollars |
+| `global_budget_periods.max_budget` | Admin | The cap for the term, in Canadian dollars |
 | `global_budget_periods.is_active` | Admin | Whole-term kill switch |
 | `course_budgets.max_budget` | Admin | The cap per course |
 | `course_budgets.alert_threshold` | Admin | When to warn the teacher |
 | `course_budgets.is_active` | Admin | Per-course kill switch |
 | `api_keys.is_active` | Admin | Kill switch for the upstream OpenAI key |
 
-The alert fires once per crossing. The system stamps a column the first time a course passes its threshold; later calls see the stamp and stay quiet. A new term requires an admin to clear the stamp.
+The alert fires once per crossing. The first time a course passes its threshold, the system stamps a column. Later calls see the stamp and stay quiet. A new term requires an admin to clear the stamp.
 
 ### Reply-size limit
 
-Every call must say how many output tokens it allows (`max_tokens`). A missing value rejects. A value above the gate's ceiling (4096 by default) rejects. This stops a runaway prompt from burning the term on one call.
+Every call must say how many output tokens it allows (`max_tokens`). The gate rejects a call that leaves the value out. It rejects a value above its ceiling, which is 4096 by default. This stops a runaway prompt from burning the term's budget on one call.
 
 ### Fail-closed everywhere
 
-Every layer halts on failure rather than passing the call through. If the database stops responding, the gate returns "Gateway temporarily unavailable" until it comes back. If no term is active, the call stops. If a kill switch is flipped, the call stops. No call sneaks through "best effort."
+Every layer halts on failure. It never passes the call through.
+
+- If the database stops responding, the gate returns "Gateway temporarily unavailable" until the database comes back.
+- Without an active term, the call stops.
+- If someone flips a kill switch, the call stops.
+
+A call never sneaks through on "best effort."
 
 ---
 
-## Part 3 — How to set it up and test it
+## Part 3: How to set it up and test it
 
 Every command and route in this part matches the running stack and the source repos.
 
 ### Before you start
+
+Confirm each part below before Step 1.
 
 | Component | Folder on disk | How to confirm |
 |---|---|---|
 | The gateway stack | `~/work/ai-telemetry-gateway/local-stack` | `docker compose ps` shows `aitg-litellm` and `aitg-postgres` healthy |
 | The autotester | `~/work/autotesting` | `master` at `6aaa0a6` or later, with #731 and #761 (`git log --oneline master \| grep -E '#731\|#761'`) |
 | The AI feedback library | `~/work/autograding-feedback-py` | `main` has `ai_feedback/models/OpenAIRemoteModel.py` |
-| MarkUs | `~/work/Markus` | `master`; the autotester reads attribution from the `file_url` MarkUs already sends |
+| MarkUs | `~/work/Markus` | `master`. The autotester reads attribution from the `file_url` MarkUs already sends. |
 
-### Step 1 — Start the gateway
+### Step 1: Start the gateway
 
 ```bash
 cd ~/work/ai-telemetry-gateway/local-stack
@@ -143,16 +182,16 @@ aitg-litellm    Up (healthy)           127.0.0.1:4000->4000/tcp
 aitg-postgres   Up (healthy)           127.0.0.1:5434->5432/tcp
 ```
 
-Apply migrations and seed (both idempotent):
+Apply the migrations, then the seed. Both are idempotent, so a second run is safe:
 
 ```bash
 docker compose run --rm migrate up
 docker compose run --rm migrate seed
 ```
 
-### Step 2 — Confirm the gate rejects unlabeled calls
+### Step 2: Confirm the gate rejects unlabeled calls
 
-This proves the attribution guard and gatekeeper are wired without touching MarkUs at all.
+This step proves the stack has the attribution guard and the gatekeeper wired in. It never touches MarkUs.
 
 ```bash
 KEY=$(grep ^LITELLM_MASTER_KEY= .env | cut -d= -f2-)
@@ -169,7 +208,7 @@ Expected response (HTTP 400):
 {"error":{"message":"Missing required MarkUs attribution: instance, course_id, assignment_id, group_id. Every gateway call must send instance, course_id, assignment_id and group_id as JSON in the x-litellm-spend-logs-metadata header.","type":"None","param":"None","code":"400"}}
 ```
 
-### Step 3 — Confirm the gate enforces `max_tokens`
+### Step 3: Confirm the gate enforces `max_tokens`
 
 ```bash
 curl -s -X POST http://localhost:4000/v1/chat/completions \
@@ -185,7 +224,7 @@ Expected (HTTP 400):
 {"error":{"message":"max_tokens=99999 exceeds the gateway ceiling of 4096."}}
 ```
 
-### Step 4 — Confirm the gate accepts a fully labeled call
+### Step 4: Confirm the gate accepts a fully labeled call
 
 ```bash
 curl -s -X POST http://localhost:4000/v1/chat/completions \
@@ -195,13 +234,17 @@ curl -s -X POST http://localhost:4000/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}],"max_tokens":5}'
 ```
 
-In the shipped local config, `gpt-4o-mini` has a `mock_response` set (see `litellm-config.yaml`), so this call returns **HTTP 200 with a canned reply without ever contacting OpenAI** — and still writes a row to `usage_logs`, because the success hook fires on mock responses too. That proves the gate accepted and forwarded the labeled call.
+This call returns **HTTP 200 with a canned reply. It never contacts OpenAI.** The shipped local config gives `gpt-4o-mini` a `mock_response` (see `litellm-config.yaml`). The call still writes a row to `usage_logs`, because the success hook fires on mock responses too. That row proves the gate accepted and forwarded the labeled call.
 
-To exercise a *real* upstream call, use a model with no mock (`gpt-4o`): with a placeholder `OPENAI_API_KEY` it returns HTTP 401 from OpenAI (the gate accepted and forwarded); set a real `OPENAI_API_KEY` in `.env`, recreate the litellm container, and the same call returns HTTP 200 and writes a row with the real cost.
+To test a *real* upstream call, use a model without a mock (`gpt-4o`). With a placeholder `OPENAI_API_KEY`, it returns HTTP 401 from OpenAI. The 401 shows the gate accepted and forwarded the call. For a real reply:
 
-### Step 5 — Drive each budget path with the database
+1. Set a real `OPENAI_API_KEY` in `.env`.
+2. Recreate the litellm container.
+3. Send the same call. It returns HTTP 200. It writes a row with the real cost.
 
-These commands change live state; reset them when done.
+### Step 5: Drive each budget path with the database
+
+These commands change live state. Run the reset lines when you finish.
 
 ```bash
 USER=$(grep ^POSTGRES_USER= .env | cut -d= -f2-)
@@ -234,7 +277,7 @@ eval "$PSQL -c \"UPDATE aitg.global_budget_periods SET is_active=FALSE;\""
 eval "$PSQL -c \"UPDATE aitg.global_budget_periods SET is_active=TRUE;\""
 ```
 
-### Step 6 — Point the autotester at the gateway
+### Step 6: Point the autotester at the gateway
 
 Edit `~/work/autotesting/server/autotest_server/settings.yml`:
 
@@ -245,69 +288,63 @@ remote_url_whitelist:
   - http://localhost:4000/v1            # the LiteLLM gateway
 ```
 
-Restart the autotester. Calling MarkUs's "refresh autotest schema" (Step 7) makes the new URL appear as a choice for assignments.
+Restart the autotester. Then call MarkUs's "refresh autotest schema" (Step 7). That makes the new URL show up as a choice for assignments.
 
-### Step 7 — Set up MarkUs and its connection to the autotester
+### Step 7: Set up MarkUs and its connection to the autotester
 
-Bringing MarkUs up locally is a full Rails environment setup (`bundle install`, Postgres, Redis, asset build). Once it is running:
+Running MarkUs locally takes a full Rails environment setup: `bundle install`, Postgres, Redis, and an asset build. Once MarkUs runs:
 
 1. Log in as an admin.
 2. Open course settings.
-3. Set the autotester URL and click **Test connection**. The Rails route is `GET /admin/courses/:id/test_autotest_connection`.
+3. Set the autotester URL. Click **Test connection**. The Rails route is `GET /admin/courses/:id/test_autotest_connection`.
 4. Click **Refresh autotest schema**. The Rails route is `POST /admin/courses/:id/refresh_autotest_schema`.
 
-### Step 8 — Configure an assignment to use AI feedback through the gateway
+### Step 8: Configure an assignment to use AI feedback through the gateway
 
 1. As an instructor, open the assignment.
 2. Go to **Automated Tests → Manage**. The Rails route is `GET /courses/:course_id/assignments/:assignment_id/automated_tests/manage`.
 3. Add a tester of type **ai**.
-4. Leave **AI Feedback library version** at `main`. When the settings save, the
-   autotester builds the tester's virtualenv by installing
-   `git+https://github.com/MarkUsProject/ai-autograding-feedback.git@<that value>`.
-   `main` has the `openai-remote` provider and reads `GATEWAY_API_KEY`. The old
-   `ai-telemetry-gateway-connection` branch reads `LITELLM_API_KEY`, so runs on it
-   fail with a missing key.
+4. Leave **AI Feedback library version** at `main`.
+   - When the settings save, the autotester builds the tester's virtualenv. It installs `git+https://github.com/MarkUsProject/ai-autograding-feedback.git@<that value>`.
+   - `main` has the `openai-remote` provider. It reads `GATEWAY_API_KEY`.
+   - The old `ai-telemetry-gateway-connection` branch reads `LITELLM_API_KEY`. Runs on that branch fail with a missing key.
 5. In the test group `config`, set:
    - `model`: `openai-remote`
    - `remote_url`: the gateway URL from your whitelist, for example `http://localhost:4000/v1`
    - `prompt`, `submission`: the usual AI feedback library choices.
-   - `scope`: `code` or `text`. The image path does not send `max_tokens` yet,
-     so the gateway rejects `scope: image` with 400 "max_tokens is required".
+   - `scope`: `code` or `text`. The image path leaves out `max_tokens` for now, so the gateway rejects `scope: image` with 400 "max_tokens is required".
    - `output`: one of `overall_comment`, `annotations`, `message`.
 6. Save.
 
-> **What `model: openai-remote` is.** This is a *provider key* in the AI feedback
-> library's `ModelFactory`, not an upstream model name. It is registered in
-> `ai_feedback/models/__init__.py` (`"openai-remote": OpenAIRemoteModel`) on
-> `main`. `OpenAIRemoteModel` subclasses `OpenAIModel`
-> but points the OpenAI client at the LiteLLM gateway (`remote_url`) instead of
-> `api.openai.com`, authenticates with the LiteLLM virtual key as
-> `Authorization: Bearer`, and forwards the `x-litellm-spend-logs-metadata`
-> attribution header. The actual upstream model (e.g. `gpt-4o-mini`) is a separate
-> value the gateway resolves from its own `model_list` in `litellm-config.yaml`.
-> (Contrast with `model: remote`/`RemoteModel`, which targets the `markus-ai-server`
-> "polymouth" proxy with a custom payload and an `X-API-KEY` header.)
+> **What `model: openai-remote` is.** It is a *provider key* in the AI feedback library's `ModelFactory`, as opposed to an upstream model name. On `main`, `ai_feedback/models/__init__.py` registers it as `"openai-remote": OpenAIRemoteModel`.
+>
+> `OpenAIRemoteModel` subclasses `OpenAIModel`, with three changes:
+>
+> - It points the OpenAI client at the LiteLLM gateway (`remote_url`) in place of `api.openai.com`.
+> - It authenticates with the LiteLLM virtual key as `Authorization: Bearer`.
+> - It forwards the `x-litellm-spend-logs-metadata` attribution header.
+>
+> The actual upstream model (e.g. `gpt-4o-mini`) is a separate value. The gateway resolves it from its own `model_list` in `litellm-config.yaml`.
+>
+> Compare `model: remote`, or `RemoteModel`. It targets the `markus-ai-server` "polymouth" proxy. It sends a custom payload with an `X-API-KEY` header.
 
-> **Authentication.** The tester process must see `GATEWAY_API_KEY` — the LiteLLM
-> virtual key the gateway accepts as `Authorization: Bearer`. For local testing the
-> master key in `local-stack/.env` works. The key goes in the autotester server's
-> `settings.local.yml` under `ai_tester_env`, next to `REMOTE_API_KEY` for
-> polymouth. The server hands those keys to the AI tester alone. Keep the file at
-> mode 600, then restart the autotest server. Without the key every run errors with
-> `The AI tester is missing GATEWAY_API_KEY`. To make that key, see "Make a key for
-> callers" in `local-stack/README.md`.
+> **Authentication.** The tester process must see `GATEWAY_API_KEY`. That is the LiteLLM virtual key the gateway accepts as `Authorization: Bearer`.
+>
+> - For local testing, the master key in `local-stack/.env` works.
+> - Put the key in the autotester server's `settings.local.yml`, under `ai_tester_env`. It sits next to `REMOTE_API_KEY` for polymouth.
+> - The server hands those keys to the AI tester alone.
+> - Keep the file at mode 600. Then restart the autotest server.
+> - Without the key, every run errors with `The AI tester is missing GATEWAY_API_KEY`.
+> - To make that key, see "Make a key for callers" in `local-stack/README.md`.
 
-> **Reply-size limit.** The gateway rejects calls that do not state `max_tokens`
-> (see Part 2). The autotester's tester config has no field for model options, so
-> `OpenAIRemoteModel` sends `max_tokens=1024` on its own when the caller does not
-> pick a value. The gateway ceiling is 4096.
+> **Reply-size limit.** The gateway rejects any call that leaves out `max_tokens` (see Part 2). The autotester's tester config lacks a field for model options. To fill that gap, `OpenAIRemoteModel` sends `max_tokens=1024` on its own whenever the caller leaves the value unset. The gateway ceiling is 4096.
 
-The autotester schema field for `remote_url` (`~/work/autotesting/server/autotest_server/testers/ai/settings_schema.json`) presents whichever URLs are in your whitelist as the drop-down choices.
+The autotester schema field for `remote_url` lists the URLs in your whitelist as its drop-down choices. That field lives in `~/work/autotesting/server/autotest_server/testers/ai/settings_schema.json`.
 
-### Step 9 — Run a test and watch the row land
+### Step 9: Run a test and watch the row land
 
-1. As an instructor or student, trigger a test run on a submission.
-2. While the run executes, tail the gateway logs:
+1. As an instructor or student, start a test run on a submission.
+2. While the run goes, tail the gateway logs:
 
    ```bash
    docker logs -f aitg-litellm
@@ -319,17 +356,13 @@ The autotester schema field for `remote_url` (`~/work/autotesting/server/autotes
    eval "$PSQL -c \"SELECT provider_request_id, instance, course_id, total_cost, created_at FROM aitg.usage_logs ORDER BY id DESC LIMIT 5;\""
    ```
 
-   A row appears with the four labels and the CAD cost.
+   A row appears. It holds the four labels and the CAD cost.
 
-   With caching turned on, re-running the same test on the same submission
-   adds zero new rows. LiteLLM replays the saved reply, meaning that the call
-   costs zero and leaves the ledger unchanged. The log says `served from cache`
-   each time. This stack ships with caching off, meaning that every re-run
-   bills and logs.
+   With caching on, a re-run of the same test on the same submission adds zero new rows. LiteLLM replays the saved reply. The call costs zero. The ledger stays the same. The log says `served from cache` each time. This stack ships with caching off. Every re-run bills and logs.
 
-### Step 10 — Drive the alert path
+### Step 10: Drive the alert path
 
-Set the alert threshold low so the next call crosses it:
+Set the alert threshold low, so the next call crosses it:
 
 ```bash
 eval "$PSQL -c \"UPDATE aitg.course_budgets SET alert_threshold=0.01 WHERE instance='markus.example.edu' AND course_id=12;\""
@@ -341,11 +374,11 @@ Run another test. Check `course_budgets.alert_sent_at`:
 eval "$PSQL -c \"SELECT instance, course_id, alert_sent_at FROM aitg.course_budgets;\""
 ```
 
-The stamp is set. The next call does not re-fire. Wiring the actual instructor email to MarkUs's `NotificationMailer` is the planned next piece (decision-record §"Alert delivery").
+The column now holds the stamp. The next call skips the alert. The planned next piece wires the actual instructor email to MarkUs's `NotificationMailer` (decision-record §"Alert delivery").
 
 ### A quick check without MarkUs
 
-Standing up MarkUs end-to-end is a long setup. If that is too much for one sitting, Steps 2 through 5 cover the gate end-to-end. The repo's automated checks also cover every code path:
+Steps 2 through 5 cover the gate end-to-end. Standing up MarkUs end-to-end is a long setup. If that is too much for one sitting, use those steps. The repo's automated checks cover every code path:
 
 ```bash
 cd ~/work/ai-telemetry-gateway
@@ -359,18 +392,33 @@ AITG_TEST_DATABASE_URL="$URL" AITG_ENCRYPTION_KEY="$KEY" \
   .venv/bin/python -m pytest tests/ -q
 ```
 
-The verified count today: 75 pass against the live database, or 62 pass and 13 skipped without it. Coverage spans the schema, role privileges, encryption, the attribution guard, the telemetry adapter, the gatekeeper, the CAD FX cascade, the dead-letter drain, and the three health-check queries.
+The verified count today:
+
+- 75 pass against the live database.
+- Without it, 62 pass. The other 13 skip.
+
+The tests cover:
+
+- the schema
+- role privileges
+- encryption
+- the attribution guard
+- the telemetry adapter
+- the gatekeeper
+- the CAD FX cascade
+- the dead-letter drain
+- the three health-check queries
 
 ### Where to look when something goes wrong
 
 | Symptom | First place to look |
 |---|---|
-| `argument --model: invalid choice: 'openai-remote'` | The tester virtualenv installed `ai_feedback` from a ref without the provider. Set **AI Feedback library version** to `main` in the tester settings and save again so the virtualenv rebuilds. |
-| `The AI tester is missing GATEWAY_API_KEY` | Put the LiteLLM virtual key in the autotester server's `settings.local.yml` under `ai_tester_env`, then restart the autotest server. |
-| `LITELLM_API_KEY is not set` | The tester virtualenv runs the old `ai-telemetry-gateway-connection` branch. Set **AI Feedback library version** to `main` and save again. |
-| 400 "max_tokens is required" | The tester virtualenv has an `ai_feedback` build from before `OpenAIRemoteModel` defaulted `max_tokens`. Rebuild it from `main` (step 8). |
-| Every call returns 400 "Missing required MarkUs attribution" | The autotester is not sending the `x-litellm-spend-logs-metadata` header. Check the autotester runs `master` with #731, `ai_feedback` runs `main`, and `model: openai-remote` is set. |
-| Every call returns 400 "Gateway temporarily unavailable" | Database is unreachable from the litellm container. `docker compose logs litellm` shows the exception. |
-| Zero new rows after re-running the same test | Check `docker logs aitg-litellm`. A line reading `served from cache ... the ledger is correct` shows the reply was replayed at zero cost, meaning that the absent row is correct. A line reading `reusing request ids ... under-reporting spend` points to a real fault. |
-| Costs read as 0 | `OPENAI_API_KEY` is unset or fake; OpenAI returned 401 and the success hook did not fire. |
-| Alert email never arrives | The gatekeeper stamps `alert_sent_at` but the MarkUs mailer wiring is the next step. |
+| `argument --model: invalid choice: 'openai-remote'` | The tester virtualenv installed `ai_feedback` from a ref that lacks the provider. In the tester settings, set **AI Feedback library version** to `main`. Save again so the virtualenv rebuilds. |
+| `The AI tester is missing GATEWAY_API_KEY` | Put the LiteLLM virtual key in the autotester server's `settings.local.yml`, under `ai_tester_env`. Then restart the autotest server. |
+| `LITELLM_API_KEY is not set` | The tester virtualenv runs the old `ai-telemetry-gateway-connection` branch. Set **AI Feedback library version** to `main`. Save again. |
+| 400 "max_tokens is required" | The tester virtualenv holds an `ai_feedback` build from before `OpenAIRemoteModel` set a default `max_tokens`. Rebuild it from `main` (step 8). |
+| Every call returns 400 "Missing required MarkUs attribution" | The autotester leaves out the `x-litellm-spend-logs-metadata` header. Check that the autotester runs `master` with #731. Check that `ai_feedback` runs `main`. Check that `model: openai-remote` is set. |
+| Every call returns 400 "Gateway temporarily unavailable" | The litellm container fails to reach the database. `docker compose logs litellm` shows the exception. |
+| Zero new rows after re-running the same test | Check `docker logs aitg-litellm`. A line with `served from cache ... the ledger is correct` means LiteLLM replayed the reply at zero cost. The missing row is correct. A line with `reusing request ids ... under-reporting spend` points to a real fault. |
+| Costs read as 0 | `OPENAI_API_KEY` is unset or fake. OpenAI returned 401. The success hook did not fire. |
+| Alert email never arrives | The gatekeeper stamps `alert_sent_at`. The MarkUs mailer wiring is the next step. |

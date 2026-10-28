@@ -1,6 +1,6 @@
-# Local Stack — LiteLLM + Postgres
+# Local Stack: LiteLLM + Postgres
 
-Spin up the LiteLLM proxy and PostgreSQL on your machine.
+Run the LiteLLM proxy and PostgreSQL on your machine.
 
 ## Topology
 
@@ -16,9 +16,9 @@ Spin up the LiteLLM proxy and PostgreSQL on your machine.
   └────────────────────────────────────────────────┘
 ```
 
-Both containers sit on an isolated bridge network (`aitg-net`). They reach
-each other by container name. Host ports are bound to `127.0.0.1` so nothing
-in the stack is reachable from outside your machine.
+Both containers sit on an isolated bridge network, `aitg-net`. They reach each
+other by container name. The host ports bind to `127.0.0.1`, so your machine
+alone can reach the stack.
 
 ## First-time setup
 
@@ -31,10 +31,12 @@ docker compose up -d
 docker compose ps        # both services should be "healthy"
 ```
 
-LiteLLM's `prisma migrate deploy` runs on first start and creates its own
-tables in the `public` schema. Our 5 tables live in the dedicated
-`aitg` schema (see `init-db.sql`) and are created by a separate migration
-flow — see "Apply the schema" below.
+On first start, LiteLLM runs `prisma migrate deploy`. That step creates
+LiteLLM's own tables in the `public` schema.
+
+Our 5 tables live in their own schema, `aitg`. See `init-db.sql` for that
+schema. A separate migration flow creates our tables. See "Apply the schema"
+below.
 
 ## Apply the schema
 
@@ -43,13 +45,19 @@ docker compose run --rm migrate up       # applies db/migrations/*.sql
 docker compose run --rm migrate seed     # loads db/seed/*.sql (idempotent)
 ```
 
-After this runs, the `aitg` schema contains the five tables (`api_keys`,
-`global_budget_periods`, `course_budgets`, `budget_slots`, `usage_logs`)
-plus the `schema_migrations` tracking table.
+After these commands run, the `aitg` schema holds the five tables:
+
+- `api_keys`
+- `global_budget_periods`
+- `course_budgets`
+- `budget_slots`
+- `usage_logs`
+
+It holds one more: the `schema_migrations` tracking table.
 
 ## Smoke test
 
-Once both services are healthy:
+Run these checks once both services are healthy:
 
 ```bash
 # 1. Liveliness probe.
@@ -67,7 +75,7 @@ curl -sS http://localhost:4000/v1/chat/completions \
   -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-Admin UI: open `http://localhost:4000/ui` and sign in with the master key.
+For the admin UI, open `http://localhost:4000/ui`. Sign in with the master key.
 
 ## Make a key for callers
 
@@ -78,12 +86,12 @@ a virtual key for anything you share.
 `LITELLM_MASTER_KEY`. It works on every call. Keep it private.
 
 **A virtual key** is a limited key you make from the master key. Give this one to
-the autotester. Scope it to a few models. Cap its spend. Set it to expire. Turn
-off a leaked virtual key on its own, and the master key stays safe.
+the autotester. Scope it to a few models. Cap its spend. Set it to expire. If a
+virtual key leaks, turn it off on its own. The master key stays safe.
 
 Make a virtual key two ways: one command, or the web page.
 
-### Option 1 — one command
+### Option 1: one command
 
 Ask the proxy for a key. Prove you are the admin with the master key.
 
@@ -107,17 +115,17 @@ Copy the key now. The full key shows once.
 | Field | What it controls |
 |---|---|
 | `models` | The models this key may call. Match the names in `litellm-config.yaml`. |
-| `max_budget` | A spend cap in US dollars for this key. Omit it for no cap. |
-| `duration` | How long the key lives, such as `30d` or `24h`. Omit it for no expiry. |
+| `max_budget` | A spend cap in US dollars for this key. Leave it out for an uncapped key. |
+| `duration` | How long the key lives, such as `30d` or `24h`. Leave it out for a key that never expires. |
 | `metadata` | Free notes that tell your keys apart. |
 
 The `max_budget` field caps this one key inside LiteLLM. The gateway's course and
-term budgets live in Postgres and apply on top. A call stops at whichever cap it
-hits first.
+term budgets live in Postgres. They apply on top. A call stops at whichever cap
+it hits first.
 
-### Option 2 — the web page
+### Option 2: the web page
 
-Make a key by clicking, with no command.
+Make a key by clicking, instead of typing a command.
 
 1. Open `http://localhost:4000/ui`.
 2. Sign in with the master key.
@@ -138,11 +146,11 @@ ai_tester_env:
   GATEWAY_API_KEY: "sk-abc123XYZ..."
 ```
 
-Keep that file at mode 600. The server refuses to start when its group or
+Keep that file at mode 600. The server refuses to start if the file's group or
 other users can read it. Restart the autotest server to load the key.
 
 The server hands the key to the AI tester alone. The tester sends it as
-`Authorization: Bearer`. Without it, every run fails with `The AI tester is
+`Authorization: Bearer`. If the key is missing, every run fails with `The AI tester is
 missing GATEWAY_API_KEY`.
 
 ## Stopping
@@ -156,28 +164,31 @@ docker compose down -v         # stop and wipe the database (named volume)
 
 | Topic | Local assumption | Production resolution |
 |---|---|---|
-| Host | Developer Docker | UofT-managed VM or container host |
-| Secret transport | `.env` file, gitignored | Sysadmin's secret store (Vault, K8s Secret, systemd EnvironmentFile, …) |
-| Network exposure | `127.0.0.1` only | Private subnet; admin UI behind VPN / jump host |
-| Postgres version | 18.4-alpine (pinned) | Same major version, patch follows sysadmin policy |
-| TLS to Postgres | none (loopback) | required; managed by sysadmin |
-| Backup | none (named volume) | Sysadmin's existing cron / snapshot mechanism |
-| Role separation | Admin and app roles (see `init-db.sql`) | Same model; passwords from secret store |
+| Host | Docker on a developer's machine | A VM or container host that UofT manages |
+| Secret transport | `.env` file, gitignored | The sysadmin's secret store (Vault, K8s Secret, systemd EnvironmentFile, …) |
+| Network exposure | Bound to `127.0.0.1` alone | A private subnet. The admin UI sits behind a VPN or jump host. |
+| Postgres version | 18.4-alpine, pinned | The same major version. The patch level follows sysadmin policy. |
+| TLS to Postgres | None. Traffic stays on loopback. | Required. The sysadmin manages it. |
+| Backup | None. Data lives in a named volume. | The sysadmin's existing cron or snapshot setup |
+| Role separation | Admin and app roles (see `init-db.sql`) | The same model. Passwords come from the secret store. |
 
-If sysadmin overrides any of these, update the table here and the relevant
-inline comment in `docker-compose.yml`.
+If the sysadmin overrides any of these, update this table. Then update the
+matching inline comment in `docker-compose.yml`.
 
 ## What this stack runs
 
-- LiteLLM proxy with three custom hooks loaded from `../lib/`: the
-  attribution guard, the gatekeeper, and the telemetry adapter (see
-  `litellm-config.yaml` for the wire-up).
-- PostgreSQL with the five aitg tables in the `aitg` schema and LiteLLM's
-  own Prisma tables in `public`.
+- The LiteLLM proxy. It loads three custom hooks from `../lib/`. See
+  `litellm-config.yaml` for the wire-up.
+  - The attribution guard
+  - The gatekeeper
+  - The telemetry adapter
+- PostgreSQL. It holds two groups of tables:
+  - The five aitg tables, in the `aitg` schema
+  - LiteLLM's own Prisma tables, in `public`
 - A migration runner service (`docker compose run --rm migrate ...`).
 - An on-demand pytest runner (`docker compose --profile tests run --rm tests`).
 
-For the full operator and tester walkthrough, see `../docs/USER_GUIDE.md`.
+See `../docs/USER_GUIDE.md` for the full operator and tester walkthrough.
 
 ## Troubleshooting
 
@@ -185,23 +196,26 @@ For the full operator and tester walkthrough, see `../docs/USER_GUIDE.md`.
 ```bash
 docker compose logs litellm | tail -50
 ```
-The two most common causes locally are a missing `LITELLM_MASTER_KEY` (must
-start with `sk-`) and the Postgres container failing its healthcheck.
+On a local stack, the two most common causes are:
 
-**Postgres healthcheck stays "starting".** First-boot migration can take 10-20
+- A missing `LITELLM_MASTER_KEY`, which must start with `sk-`.
+- The Postgres container failing its healthcheck.
+
+**Postgres healthcheck stays "starting".** First-boot migration can take 10 to 20
 seconds on cold disks. Wait, then re-check `docker compose ps`.
 
 **Port already in use.** Edit `docker-compose.yml` to change the host port
-binding (left side of `127.0.0.1:5434:5432` or `127.0.0.1:4000:4000`).
+binding. That binding is the left side of `127.0.0.1:5434:5432` or
+`127.0.0.1:4000:4000`.
 
-**Edits to `lib/*.py` require clearing the bytecode cache.** Docker Desktop
-reports a stale mtime for single-file bind mounts, meaning that Python keeps
-loading the cached bytecode. `grep` on the container path shows the new source
-while the running module still returns the old value. Clear the cache, then
+**Edits to `lib/*.py` require clearing the bytecode cache.** After an edit,
+`grep` on the container path shows the new source. The running module still
+returns the old value. Docker Desktop reports a stale mtime for single-file bind
+mounts, so Python keeps loading the cached bytecode. Clear the cache, then
 recreate the container:
 ```bash
 docker exec aitg-litellm rm -rf /app/__pycache__
 docker compose up -d litellm
 ```
-The `docker compose run --rm tests` path stays current; it sets
+The `docker compose run --rm tests` path stays current. It sets
 `PYTHONDONTWRITEBYTECODE`.

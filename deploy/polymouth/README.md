@@ -1,6 +1,6 @@
 # Deploying the gateway on polymouth
 
-This folder installs the gateway on polymouth under daemontools, from a Python venv. Mateo runs every step, except 4 root steps that Dean runs from 2 emails.
+This folder installs the gateway on polymouth under daemontools, from a Python venv. Dean runs the 4 root steps from 2 emails. Mateo runs every other step.
 
 The staging plan explains the reasoning: `Markus/.claude/plans/AI_Telemetry_Gateway_Staging_Plan.md`.
 
@@ -15,23 +15,23 @@ Each script takes a conf file as its first argument.
 | `install.sh` | Builds the gateway into the folder the conf names. Safe to re-run. |
 | `make-secrets.sh` | Writes `secrets.env` on the first run. Later runs keep it. |
 | `make-db-setup.sh` | Writes Dean's database setup file, with both role passwords |
-| `render.py` | Fills the SQL templates after checking each value |
+| `render.py` | Checks each value, then fills the SQL templates |
 | `templates/db-setup.sql.tmpl` | Shapes Dean's database setup |
 | `templates/0*.sql.tmpl` | Shapes the staging budget seeds |
 | `config/config.yaml` | Lists the paid model for staging |
 | `config/config.rehearsal.yaml` | Adds a free mock model for the rehearsal |
 | `service/` | Starts LiteLLM as `autotst` under daemontools |
-| `trial-pg.sh` | Runs a disposable Postgres, so the rehearsal leaves the real database untouched |
+| `trial-pg.sh` | Runs a throwaway Postgres, so the rehearsal leaves the real database untouched |
 | `db.sh` | Applies migrations or seeds, or lists applied migrations |
-| `smoke-test.sh` | Runs user guide steps 2–5 with pass or fail output |
-| `make-virtual-key.sh` | Mints the autotester's key |
+| `smoke-test.sh` | Runs user guide steps 2 to 5, with pass or fail output |
+| `make-virtual-key.sh` | Mints the autotester's virtual key |
 | `lib.sh` | Loads and checks the conf for every script |
 
 ## Rehearsal (Phase 1, before Email 1)
 
 The rehearsal passes when the smoke test prints `all checks passed`. It runs in `/data/otelcol`, which Mateo owns.
 
-1. On your Mac, copy the committed branch to polymouth. The copy skips local edits and `.git`:
+1. On your Mac, copy the committed branch to polymouth. The copy skips local edits. It skips `.git` too:
    ```
    git archive deploy/polymouth-staging | ssh polymouth 'umask 007 && mkdir /data/otelcol/aitg-src && tar -x -C /data/otelcol/aitg-src'
    ```
@@ -49,7 +49,7 @@ The rehearsal passes when the smoke test prints `all checks passed`. It runs in 
    ./trial-pg.sh rehearsal.conf start
    ./trial-pg.sh rehearsal.conf setup
    ```
-5. Apply the schema and budgets:
+5. Apply the schema. Seed the budgets:
    ```
    ./db.sh rehearsal.conf up
    ./db.sh rehearsal.conf seed
@@ -79,7 +79,7 @@ Staging repeats the rehearsal in Dean's folder, with real budgets and the real d
    ```
    git archive deploy/polymouth-staging | ssh polymouth 'umask 007 && mkdir /data/ai-telemetry-gateway/src && tar -x -C /data/ai-telemetry-gateway/src'
    ```
-3. On polymouth, type the UofT key at a silent prompt. Then build. The first build stores the key. Later builds keep `secrets.env`.
+3. On polymouth, type the UofT key at a silent prompt. Then build. The first build stores the key in `secrets.env`. Later builds keep that file.
    ```
    cd /data/ai-telemetry-gateway/src/deploy/polymouth
    read -rs UOFT_OPENAI_KEY && export UOFT_OPENAI_KEY
@@ -97,7 +97,7 @@ Staging repeats the rehearsal in Dean's folder, with real budgets and the real d
    ```
    rm /data/ai-telemetry-gateway/deploy/db-setup.sql
    ```
-7. Apply the schema and budgets:
+7. Apply the schema. Seed the budgets:
    ```
    ./db.sh staging.conf up
    ./db.sh staging.conf seed
@@ -106,14 +106,14 @@ Staging repeats the rehearsal in Dean's folder, with real budgets and the real d
    ```
    ./smoke-test.sh staging.conf gpt-4o https://polymouth.teach.cs.toronto.edu
    ```
-9. Mint the autotester's key:
+9. Mint the autotester's virtual key:
    ```
    ./make-virtual-key.sh staging.conf
    ```
 
 ## Where to look when something breaks
 
-Start with the gateway's own log, then follow the symptom.
+Start with the gateway's own log. Then find the symptom in the table.
 
 | Symptom | First check |
 |---|---|
