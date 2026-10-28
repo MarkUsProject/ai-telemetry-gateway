@@ -1,0 +1,51 @@
+# LiteLLM proxy configuration for staging on polymouth.
+#
+# Differs from local-stack/litellm-config.yaml in its model list: one paid
+# model through the UofT AI gateway, plus two local Ollama models.
+#
+# Reference: https://docs.litellm.ai/docs/proxy/config_settings
+
+model_list:
+  # Routed through the UofT ITS AI gateway ("AI Kitchen"). polymouth reaches it
+  # without the VPN. The autotester's AI tester must set model_name: gpt-4o.
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_base: https://api.ai.its.utoronto.ca/v1
+      api_key: os.environ/UOFT_OPENAI_KEY
+  # Local Ollama on the same host, CPU only. Free to run; the prices below are
+  # gpt-4o-mini's, so budgets and the ledger still count each call.
+  - model_name: qwen3:4b-instruct
+    litellm_params:
+      model: openai/qwen3:4b-instruct
+      api_base: http://127.0.0.1:11434/v1
+      # Ollama ignores the key. LiteLLM still wants a key string.
+      api_key: ollama-unused
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
+  # Thinking makes each call about 10x slower on CPU (139 s against 12 s in
+  # our test), so the gateway turns it off for every call.
+  - model_name: gemma4:12b
+    litellm_params:
+      model: openai/gemma4:12b
+      api_base: http://127.0.0.1:11434/v1
+      api_key: ollama-unused
+      reasoning_effort: none
+      # LiteLLM rejects reasoning_effort for models it does not know, unless
+      # it is listed here.
+      allowed_openai_params: ["reasoning_effort"]
+      input_cost_per_token: 0.00000015
+      output_cost_per_token: 0.0000006
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  num_retries: 3
+  request_timeout: 600
+  # Order matters: LiteLLM runs the pre-call chain in list order.
+  # See local-stack/litellm-config.yaml for what each callback does.
+  callbacks:
+    - attribution_guard.attribution_guard_instance
+    - gatekeeper.gatekeeper_instance
+    - telemetry_adapter.telemetry_adapter_instance

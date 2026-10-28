@@ -1,0 +1,11 @@
+-- One budget row per funded staging course.
+-- Replaces db/seed/002_default_course_budget.sql (markus.example.edu course 12).
+-- The gatekeeper refuses any course without a row here.
+-- Idempotent: re-running leaves existing rows untouched.
+
+SET search_path TO aitg;
+
+INSERT INTO course_budgets (instance, course_id, max_budget, alert_threshold, is_active)
+SELECT '${MARKUS_INSTANCE}', c, ${COURSE_BUDGET_CAD}, ${COURSE_ALERT_CAD}, TRUE
+  FROM unnest(ARRAY[${COURSE_IDS}]::int[]) AS c
+ON CONFLICT (instance, course_id) DO NOTHING;

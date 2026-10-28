@@ -1,6 +1,6 @@
 # ai-telemetry-gateway
 
-Self-hosted LiteLLM proxy + PostgreSQL ledger that fronts cloud OpenAI calls from the MarkUs grading platform. Records every call for billing and audit, refuses calls that exceed a course budget or term-wide cap.
+This is a self-hosted LiteLLM proxy with a PostgreSQL ledger. It sits in front of cloud OpenAI calls from MarkUs, the grading platform. It logs each call for billing and audit. It blocks a call that goes over a course budget or the term-wide cap.
 
 ## What lives here
 
@@ -16,7 +16,16 @@ ai-telemetry-gateway/
 
 ## Status
 
-The gateway works end-to-end on a local docker-compose stack: MarkUs → autotester → AI feedback library → LiteLLM proxy → mock or OpenAI → PostgreSQL ledger. See `docs/USER_GUIDE.md` for how to run and test it.
+The gateway works end to end on a local docker-compose stack. A call takes this path:
+
+1. MarkUs
+2. the autotester
+3. the AI feedback library
+4. the LiteLLM proxy
+5. a mock or OpenAI
+6. the PostgreSQL ledger
+
+`docs/USER_GUIDE.md` shows how to run it and test it.
 
 ## Where this fits in the larger system
 
@@ -28,7 +37,10 @@ MarkUs (Rails) ──► Autotester ──► [ this project ] ──► OpenAI 
                                   (ledger + budgets)
 ```
 
-Local-model traffic (Ollama, llama.cpp) keeps flowing through the existing `markus-ai-server` proxy ("polymouth"). This project owns cloud OpenAI traffic only.
+Two proxies split the traffic:
+
+- Local-model traffic (Ollama, llama.cpp) still goes through the existing `markus-ai-server` proxy ("polymouth").
+- Cloud OpenAI traffic goes through this project.
 
 ## Local development
 

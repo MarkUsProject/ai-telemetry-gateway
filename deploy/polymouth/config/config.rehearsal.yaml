@@ -1,0 +1,29 @@
+# LiteLLM proxy configuration for the polymouth rehearsal.
+#
+# config.yaml plus one mock model. The mock answers with canned text and stays
+# off the network. It still fires the success hook, so smoke-test.sh proves a
+# usage_logs row lands without paying OpenAI.
+
+model_list:
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_base: https://api.ai.its.utoronto.ca/v1
+      api_key: os.environ/UOFT_OPENAI_KEY
+  - model_name: gpt-4o-mini-mock
+    litellm_params:
+      model: openai/gpt-4o-mini
+      # Mock calls stay local. LiteLLM still wants a key string.
+      api_key: mock-key-unused
+      mock_response: "Mock reply for the polymouth rehearsal."
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+litellm_settings:
+  num_retries: 3
+  request_timeout: 600
+  callbacks:
+    - attribution_guard.attribution_guard_instance
+    - gatekeeper.gatekeeper_instance
+    - telemetry_adapter.telemetry_adapter_instance
