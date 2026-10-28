@@ -123,9 +123,9 @@ Every command and route in this part matches the running stack and the source re
 | Component | Folder on disk | How to confirm |
 |---|---|---|
 | The gateway stack | `~/work/ai-telemetry-gateway/local-stack` | `docker compose ps` shows `aitg-litellm` and `aitg-postgres` healthy |
-| The autotester | `~/work/autotesting` | Branch `ai-telemetry-gateway-connection` present (`git branch \| grep telemetry`) |
-| The AI feedback library | `~/work/autograding-feedback-py` | Same branch present |
-| MarkUs | `~/work/Markus` | Same branch present |
+| The autotester | `~/work/autotesting` | `master` at `6aaa0a6` or later, with #731 and #761 (`git log --oneline master \| grep -E '#731\|#761'`) |
+| The AI feedback library | `~/work/autograding-feedback-py` | `main` has `ai_feedback/models/OpenAIRemoteModel.py` |
+| MarkUs | `~/work/Markus` | `master`; the autotester reads attribution from the `file_url` MarkUs already sends |
 
 ### Step 1 — Start the gateway
 
@@ -261,12 +261,12 @@ Bringing MarkUs up locally is a full Rails environment setup (`bundle install`, 
 1. As an instructor, open the assignment.
 2. Go to **Automated Tests → Manage**. The Rails route is `GET /courses/:course_id/assignments/:assignment_id/automated_tests/manage`.
 3. Add a tester of type **ai**.
-4. Set **AI Feedback library version** to `ai-telemetry-gateway-connection`. When the
-   settings save, the autotester builds the tester's virtualenv by installing
+4. Leave **AI Feedback library version** at `main`. When the settings save, the
+   autotester builds the tester's virtualenv by installing
    `git+https://github.com/MarkUsProject/ai-autograding-feedback.git@<that value>`.
-   The default `main` does not have the `openai-remote` provider yet, so leaving it
-   unchanged fails at run time with
-   `argument --model: invalid choice: 'openai-remote'`.
+   `main` has the `openai-remote` provider and reads `GATEWAY_API_KEY`. The old
+   `ai-telemetry-gateway-connection` branch reads `LITELLM_API_KEY`, so runs on it
+   fail with a missing key.
 5. In the test group `config`, set:
    - `model`: `openai-remote`
    - `remote_url`: the gateway URL from your whitelist, for example `http://localhost:4000/v1`
@@ -278,10 +278,8 @@ Bringing MarkUs up locally is a full Rails environment setup (`bundle install`, 
 
 > **What `model: openai-remote` is.** This is a *provider key* in the AI feedback
 > library's `ModelFactory`, not an upstream model name. It is registered in
-> `ai_feedback/models/__init__.py` (`"openai-remote": OpenAIRemoteModel`) on the
-> `ai-telemetry-gateway-connection` branch — a companion pull request to that
-> library, not yet on `main`. Until it merges, the version field in step 4 is what
-> makes the provider available. `OpenAIRemoteModel` subclasses `OpenAIModel`
+> `ai_feedback/models/__init__.py` (`"openai-remote": OpenAIRemoteModel`) on
+> `main`. `OpenAIRemoteModel` subclasses `OpenAIModel`
 > but points the OpenAI client at the LiteLLM gateway (`remote_url`) instead of
 > `api.openai.com`, authenticates with the LiteLLM virtual key as
 > `Authorization: Bearer`, and forwards the `x-litellm-spend-logs-metadata`
@@ -290,12 +288,14 @@ Bringing MarkUs up locally is a full Rails environment setup (`bundle install`, 
 > (Contrast with `model: remote`/`RemoteModel`, which targets the `markus-ai-server`
 > "polymouth" proxy with a custom payload and an `X-API-KEY` header.)
 
-> **Authentication.** The tester process must see `LITELLM_API_KEY` — the LiteLLM
+> **Authentication.** The tester process must see `GATEWAY_API_KEY` — the LiteLLM
 > virtual key the gateway accepts as `Authorization: Bearer`. For local testing the
-> master key in `local-stack/.env` works. The AI tester calls `load_dotenv()`, so the
-> key can sit in the autotester's `.env` the same way `REMOTE_API_KEY` does for
-> polymouth. Without it every run errors with `LITELLM_API_KEY is not set`. To
-> make that key, see "Make a key for callers" in `local-stack/README.md`.
+> master key in `local-stack/.env` works. The key goes in the autotester server's
+> `settings.local.yml` under `ai_tester_env`, next to `REMOTE_API_KEY` for
+> polymouth. The server hands those keys to the AI tester alone. Keep the file at
+> mode 600, then restart the autotest server. Without the key every run errors with
+> `The AI tester is missing GATEWAY_API_KEY`. To make that key, see "Make a key for
+> callers" in `local-stack/README.md`.
 
 > **Reply-size limit.** The gateway rejects calls that do not state `max_tokens`
 > (see Part 2). The autotester's tester config has no field for model options, so
@@ -365,10 +365,11 @@ The verified count today: 75 pass against the live database, or 62 pass and 13 s
 
 | Symptom | First place to look |
 |---|---|
-| `argument --model: invalid choice: 'openai-remote'` | The tester virtualenv installed `ai_feedback` from a ref without the provider (the default is `main`). Set **AI Feedback library version** to `ai-telemetry-gateway-connection` in the tester settings and save again so the virtualenv rebuilds. |
-| `LITELLM_API_KEY is not set` | Put the LiteLLM virtual key in the autotester's `.env` (or the worker environment); the AI tester loads it with `load_dotenv()`. |
-| 400 "max_tokens is required" | The tester virtualenv has an `ai_feedback` build from before `OpenAIRemoteModel` defaulted `max_tokens`. Rebuild it from the `ai-telemetry-gateway-connection` branch (step 8). |
-| Every call returns 400 "Missing required MarkUs attribution" | The autotester is not sending the `x-litellm-spend-logs-metadata` header. Check the AI tester is on the `ai-telemetry-gateway-connection` branch and `model: openai-remote` is set. |
+| `argument --model: invalid choice: 'openai-remote'` | The tester virtualenv installed `ai_feedback` from a ref without the provider. Set **AI Feedback library version** to `main` in the tester settings and save again so the virtualenv rebuilds. |
+| `The AI tester is missing GATEWAY_API_KEY` | Put the LiteLLM virtual key in the autotester server's `settings.local.yml` under `ai_tester_env`, then restart the autotest server. |
+| `LITELLM_API_KEY is not set` | The tester virtualenv runs the old `ai-telemetry-gateway-connection` branch. Set **AI Feedback library version** to `main` and save again. |
+| 400 "max_tokens is required" | The tester virtualenv has an `ai_feedback` build from before `OpenAIRemoteModel` defaulted `max_tokens`. Rebuild it from `main` (step 8). |
+| Every call returns 400 "Missing required MarkUs attribution" | The autotester is not sending the `x-litellm-spend-logs-metadata` header. Check the autotester runs `master` with #731, `ai_feedback` runs `main`, and `model: openai-remote` is set. |
 | Every call returns 400 "Gateway temporarily unavailable" | Database is unreachable from the litellm container. `docker compose logs litellm` shows the exception. |
 | Zero new rows after re-running the same test | Check `docker logs aitg-litellm`. A line reading `served from cache ... the ledger is correct` shows the reply was replayed at zero cost, meaning that the absent row is correct. A line reading `reusing request ids ... under-reporting spend` points to a real fault. |
 | Costs read as 0 | `OPENAI_API_KEY` is unset or fake; OpenAI returned 401 and the success hook did not fire. |

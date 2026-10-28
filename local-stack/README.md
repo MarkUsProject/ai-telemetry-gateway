@@ -130,15 +130,20 @@ Make a key by clicking, with no command.
 
 ### Give the key to the autotester
 
-Put the key in the autotester's `.env`:
+Put the key in the autotester server's `settings.local.yml`, under
+`ai_tester_env`:
 
-```bash
-LITELLM_API_KEY=sk-abc123XYZ...
+```yaml
+ai_tester_env:
+  GATEWAY_API_KEY: "sk-abc123XYZ..."
 ```
 
-The AI tester reads it with `load_dotenv()` and sends it as
-`Authorization: Bearer`. Without it, every run fails with `LITELLM_API_KEY is
-not set`.
+Keep that file at mode 600. The server refuses to start when its group or
+other users can read it. Restart the autotest server to load the key.
+
+The server hands the key to the AI tester alone. The tester sends it as
+`Authorization: Bearer`. Without it, every run fails with `The AI tester is
+missing GATEWAY_API_KEY`.
 
 ## Stopping
 
