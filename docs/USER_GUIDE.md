@@ -19,6 +19,7 @@ Say a teacher in CSC108 asks for AI feedback on Bob's assignment.
 3. The request reaches the gate.
 4. The gate runs a checklist:
    - Are all four labels there?
+   - Is AI switched on for everyone?
    - Is the term still under its budget?
    - Is this course still under its budget?
    - Are the kill switches off?
@@ -40,6 +41,7 @@ Each guard sends back its own message.
 | A student asks for a 99,999-token reply | "max_tokens=99999 exceeds the gateway ceiling of 4096." |
 | CSC108 has spent $1.50 of a $1.00 budget | "Course budget exhausted for course_id=12: spent CAD 1.50 of CAD 1.00." |
 | The term ran out of money | "Global term budget exhausted." |
+| An admin switches AI off for everyone | "AI features are currently disabled for all courses." |
 | A teacher flips the course kill switch | "Course AI features are disabled." |
 | The database is down | "Gateway temporarily unavailable." |
 
@@ -78,11 +80,12 @@ Each guard sends back its own message.
 
 1. **Attribution guard.** Reads the four labels off the request. Stops any call that lacks one.
 2. **Gatekeeper.** Runs the steps below. Any failure stops the call.
+   - It checks the reply-size rule.
+   - It reads the global AI feature flag.
    - It looks up today's term budget.
    - It sums the slot counters.
    - It looks up this course's budget.
    - It looks up this course's kill switch.
-   - It checks the reply-size rule.
 3. **Telemetry adapter.** Runs after the call returns. It does two things:
    - It writes one row to `usage_logs`.
    - It adds the cost to a random "slot". With slots, many workers can record at once without slowing each other down.
@@ -126,12 +129,49 @@ The term total is the sum of ten rows, called "slots", for the active term. Ever
 
 | Setting | Who controls it | What it does |
 |---|---|---|
+| `global_settings.ai_enabled` | Admin | The global AI feature flag. Off stops every call, in every term. |
 | `global_budget_periods.max_budget` | Admin | The cap for the term, in Canadian dollars |
 | `global_budget_periods.is_active` | Admin | Whole-term kill switch |
 | `course_budgets.max_budget` | Admin | The cap per course |
 | `course_budgets.alert_threshold` | Admin | When to warn the teacher |
 | `course_budgets.is_active` | Admin | Per-course kill switch |
 | `api_keys.is_active` | Admin | Kill switch for the upstream OpenAI key |
+
+### AI feature flag
+
+Two switches make up the AI feature flag. A call needs both on.
+
+| Switch | Scope | Starts as | Message when off |
+|---|---|---|---|
+| `global_settings.ai_enabled` | Every course on every MarkUs site | Off on a deployed gateway. On in the local stack. | "AI features are currently disabled for all courses. Contact your MarkUs administrator." |
+| `course_budgets.is_active` | One course on one MarkUs site | Off. A course has no row until an admin adds one. | "Course AI features are disabled for course_id=12 (is_active = false)." |
+
+The global switch belongs to no term. It stays off when a new term begins, until an admin turns it on. The gate reads it before any other database check, so the teacher sees the "disabled" message first. If the row is missing, the gate treats the switch as off.
+
+`global_budget_periods.is_active` is a different switch. It stops spending for one term. A new term's row starts active, so it cannot hold a lasting "off". Use it to close a term. Use the feature flag to turn AI off.
+
+The flag lives in the gateway. It stops every call that passes through the gateway. MarkUs, the autotester and the AI feedback library hold no flag of their own:
+
+- MarkUs still shows the AI tester. A test run still starts. The teacher sees the "disabled" message in the test result.
+- A call that skips the gateway also skips the flag. An assignment that points at another AI server, such as `markus-ai-server`, keeps working.
+
+An admin flips each switch with a named query in `db/queries/`. Each query prints the row it changed:
+
+```bash
+# Global: off, then on.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/queries/disable_global.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/queries/enable_global.sql
+
+# One course: off, then on.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v instance='markus.example.edu' -v course_id=12 -f db/queries/disable_course.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v instance='markus.example.edu' -v course_id=12 -f db/queries/enable_course.sql
+```
+
+Three facts to know:
+
+- A change takes effect on the next call. The gateway needs no restart. A call that is already running finishes.
+- The course queries flip the switch on an existing row. `UPDATE 0` means the course has no budget row yet. Such a course is already refused, with "No course budget configured".
+- The app role (`aitg_app`) can read the global flag and cannot change it. Run the global queries as the admin role (`aitg_admin`).
 
 The alert fires once per crossing. The first time a course passes its threshold, the system stamps a column. Later calls see the stamp and stay quiet. A new term requires an admin to clear the stamp.
 
@@ -146,6 +186,7 @@ Every layer halts on failure. It never passes the call through.
 - If the database stops responding, the gate returns "Gateway temporarily unavailable" until the database comes back.
 - Without an active term, the call stops.
 - If someone flips a kill switch, the call stops.
+- If the AI feature flag is off, or its row is missing, the call stops.
 
 A call never sneaks through on "best effort."
 
@@ -275,6 +316,26 @@ eval "$PSQL -c \"UPDATE aitg.global_budget_periods SET is_active=FALSE;\""
 
 # Reset.
 eval "$PSQL -c \"UPDATE aitg.global_budget_periods SET is_active=TRUE;\""
+```
+
+### Step 5b: Flip the AI feature flag
+
+The local seed turns the global flag on. Turn it off, send the Step 4 call, then turn it back on:
+
+```bash
+eval "$PSQL -f ../db/queries/disable_global.sql"
+# Now the Step 4 curl returns 400: "AI features are currently disabled for all courses. Contact your MarkUs administrator."
+
+eval "$PSQL -f ../db/queries/enable_global.sql"
+```
+
+Do the same for one course:
+
+```bash
+eval "$PSQL -v instance='markus.example.edu' -v course_id=12 -f ../db/queries/disable_course.sql"
+# Now: 400 "Course AI features are disabled for course_id=12 (is_active = false)."
+
+eval "$PSQL -v instance='markus.example.edu' -v course_id=12 -f ../db/queries/enable_course.sql"
 ```
 
 ### Step 6: Point the autotester at the gateway
@@ -418,6 +479,7 @@ The tests cover:
 | `LITELLM_API_KEY is not set` | The tester virtualenv runs the old `ai-telemetry-gateway-connection` branch. Set **AI Feedback library version** to `main`. Save again. |
 | 400 "max_tokens is required" | The tester virtualenv holds an `ai_feedback` build from before `OpenAIRemoteModel` set a default `max_tokens`. Rebuild it from `main` (step 8). |
 | Every call returns 400 "Missing required MarkUs attribution" | The autotester leaves out the `x-litellm-spend-logs-metadata` header. Check that the autotester runs `master` with #731. Check that `ai_feedback` runs `main`. Check that `model: openai-remote` is set. |
+| Every call returns 400 "AI features are currently disabled for all courses" | The global AI feature flag is off, or its row is missing. A deployed gateway starts this way. Run `db/queries/enable_global.sql` as the admin role. On the local stack, run `docker compose run --rm migrate seed`. |
 | Every call returns 400 "Gateway temporarily unavailable" | The litellm container fails to reach the database. `docker compose logs litellm` shows the exception. |
 | Zero new rows after re-running the same test | Check `docker logs aitg-litellm`. A line with `served from cache ... the ledger is correct` means LiteLLM replayed the reply at zero cost. The missing row is correct. A line with `reusing request ids ... under-reporting spend` points to a real fault. |
 | Costs read as 0 | `OPENAI_API_KEY` is unset or fake. OpenAI returned 401. The success hook did not fire. |

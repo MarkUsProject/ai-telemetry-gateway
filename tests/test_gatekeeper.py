@@ -2,9 +2,9 @@
 
 Two layers:
 1. Pure ``check_max_tokens`` and ``_select_random_slot`` — no DB.
-2. Live integration against the running aitg-postgres, exercising the four
-   enforcement paths (max_tokens missing, course cap, global cap, kill
-   switches) plus the slot-write distribution.
+2. Live integration against the running aitg-postgres, exercising the
+   enforcement paths (max_tokens missing, global AI feature flag, course
+   cap, global cap, kill switches) plus the slot-write distribution.
 
 Live tests skip cleanly when ``AITG_TEST_DATABASE_URL`` is unset.
 """
@@ -114,6 +114,8 @@ def fresh_course(live_env):
         periods_before = cur.fetchall()
         cur.execute("SELECT is_active, id FROM aitg.api_keys WHERE key_name = %s", (API_KEY_NAME,))
         keys_before = cur.fetchall()
+        cur.execute("SELECT ai_enabled FROM aitg.global_settings")
+        flag_before = cur.fetchone()
 
         cur.execute(
             """
@@ -129,6 +131,10 @@ def fresh_course(live_env):
         cur.execute("UPDATE aitg.budget_slots SET current_value = 0")
         cur.execute("UPDATE aitg.api_keys SET is_active = TRUE WHERE key_name = %s", (API_KEY_NAME,))
         cur.execute("UPDATE aitg.global_budget_periods SET is_active = TRUE")
+        cur.execute(
+            "INSERT INTO aitg.global_settings (ai_enabled) VALUES (TRUE) "
+            "ON CONFLICT (singleton) DO UPDATE SET ai_enabled = TRUE"
+        )
         conn.commit()
 
     yield
@@ -146,6 +152,10 @@ def fresh_course(live_env):
             "UPDATE aitg.api_keys SET is_active = %s WHERE id = %s",
             keys_before,
         )
+        # Put the flag back exactly: the row may have been absent before.
+        cur.execute("DELETE FROM aitg.global_settings")
+        if flag_before is not None:
+            cur.execute("INSERT INTO aitg.global_settings (ai_enabled) VALUES (%s)", flag_before)
         cur.execute(
             "DELETE FROM aitg.usage_logs WHERE instance = %s AND course_id = %s",
             (TEST_INSTANCE, TEST_COURSE_ID),
@@ -250,6 +260,50 @@ def test_global_period_kill_switch_rejected(fresh_course, live_env):
 
     rejection = _call_hook(dict(GOOD_DATA))
     assert rejection and "No active budget period" in rejection
+
+
+def test_global_ai_flag_off_rejected(fresh_course, live_env):
+    import psycopg
+
+    with psycopg.connect(live_env) as conn, conn.cursor() as cur:
+        cur.execute("UPDATE aitg.global_settings SET ai_enabled = FALSE")
+        conn.commit()
+
+    rejection = _call_hook(dict(GOOD_DATA))
+    assert rejection and "AI features are currently disabled for all courses" in rejection
+
+
+def test_global_ai_flag_missing_row_rejected(fresh_course, live_env):
+    """Fail-closed: a database that was migrated but never seeded has no row,
+    and that must read as off rather than slip through."""
+    import psycopg
+
+    with psycopg.connect(live_env) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM aitg.global_settings")
+        conn.commit()
+
+    rejection = _call_hook(dict(GOOD_DATA))
+    assert rejection and "AI features are currently disabled for all courses" in rejection
+
+
+def test_global_ai_flag_off_wins_over_other_rejections(fresh_course, live_env):
+    """The flag is checked first, so the caller hears "disabled" even when the
+    key, the term and the course would also have refused the call."""
+    import psycopg
+
+    with psycopg.connect(live_env) as conn, conn.cursor() as cur:
+        cur.execute("UPDATE aitg.global_settings SET ai_enabled = FALSE")
+        cur.execute("UPDATE aitg.api_keys SET is_active = FALSE WHERE key_name = %s", (API_KEY_NAME,))
+        cur.execute("UPDATE aitg.global_budget_periods SET is_active = FALSE")
+        cur.execute(
+            "UPDATE aitg.course_budgets SET is_active = FALSE "
+            "WHERE instance = %s AND course_id = %s",
+            (TEST_INSTANCE, TEST_COURSE_ID),
+        )
+        conn.commit()
+
+    rejection = _call_hook(dict(GOOD_DATA))
+    assert rejection and "AI features are currently disabled for all courses" in rejection
 
 
 def test_api_key_kill_switch_rejected(fresh_course, live_env):

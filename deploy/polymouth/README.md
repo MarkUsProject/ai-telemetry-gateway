@@ -17,13 +17,13 @@ Each script takes a conf file as its first argument.
 | `make-db-setup.sh` | Writes Dean's database setup file, with both role passwords |
 | `render.py` | Checks each value, then fills the SQL templates |
 | `templates/db-setup.sql.tmpl` | Shapes Dean's database setup |
-| `templates/0*.sql.tmpl` | Shapes the staging budget seeds |
+| `templates/0*.sql.tmpl` | Shapes the staging seeds: the budgets, and the AI feature flag switched off |
 | `config/config.yaml` | Lists the paid model for staging |
 | `config/config.rehearsal.yaml` | Adds a free mock model for the rehearsal |
 | `service/` | Starts LiteLLM as `autotst` under daemontools |
 | `trial-pg.sh` | Runs a throwaway Postgres, so the rehearsal leaves the real database untouched |
 | `db.sh` | Applies migrations or seeds, or lists applied migrations |
-| `smoke-test.sh` | Runs user guide steps 2 to 5, with pass or fail output |
+| `smoke-test.sh` | Runs user guide steps 2 to 5 and the AI feature flag check, with pass or fail output |
 | `make-virtual-key.sh` | Mints the autotester's virtual key |
 | `lib.sh` | Loads and checks the conf for every script |
 
@@ -53,6 +53,10 @@ The rehearsal passes when the smoke test prints `all checks passed`. It runs in 
    ```
    ./db.sh rehearsal.conf up
    ./db.sh rehearsal.conf seed
+   ```
+   The seed leaves the AI feature flag off. Turn it on, so the smoke test runs every check:
+   ```
+   ( source /data/otelcol/aitg-rehearsal/secrets.env && psql "$DATABASE_URL" -f ../../db/queries/enable_global.sql )
    ```
 6. Start the gateway in a second terminal:
    ```
@@ -102,7 +106,7 @@ Staging repeats the rehearsal in Dean's folder, with real budgets and the real d
    ./db.sh staging.conf up
    ./db.sh staging.conf seed
    ```
-8. Run the checks through Apache. Check 4 makes one real `gpt-4o` call of at most 5 output tokens.
+8. Run the checks through Apache. The seed leaves the AI feature flag off, so this run makes no paid call. It checks the guards and the "disabled" refusal. It skips the checks that need a call to pass.
    ```
    ./smoke-test.sh staging.conf gpt-4o https://polymouth.teach.cs.toronto.edu
    ```
@@ -110,6 +114,15 @@ Staging repeats the rehearsal in Dean's folder, with real budgets and the real d
    ```
    ./make-virtual-key.sh staging.conf
    ```
+10. The gateway still refuses every call: the AI feature flag is off. When you are ready for AI calls, turn it on:
+    ```
+    ( source /data/ai-telemetry-gateway/secrets.env && psql "$DATABASE_URL" -f ../../db/queries/enable_global.sql )
+    ```
+    `disable_global.sql` in the same folder turns it off again. Neither needs a restart.
+11. Run the checks again, now in full. Check 5 makes one real `gpt-4o` call of at most 5 output tokens. With the flag on, the test turns it off for one call and back on, so real calls are refused for about a second. The test never turns the flag on by itself.
+    ```
+    ./smoke-test.sh staging.conf gpt-4o https://polymouth.teach.cs.toronto.edu
+    ```
 
 ## Where to look when something breaks
 
@@ -123,3 +136,5 @@ Start with the gateway's own log. Then find the symptom in the table.
 | Prisma reports a missing engine after a move | The folder sits where `install.sh` built it |
 | Every call returns 502 through Apache | `svstat /service/ai-telemetry-gateway` shows the service up |
 | `usage_logs` stays empty | `var/dead-letter.jsonl` holds the failed writes |
+| Every call returns 400 "AI features are currently disabled" | The AI feature flag is off. Step 10 turns it on. |
+| The smoke test prints `SKIP` | The AI feature flag is off. Step 10 turns it on. |
