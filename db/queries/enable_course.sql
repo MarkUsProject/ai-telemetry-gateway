@@ -11,5 +11,5 @@
 UPDATE aitg.course_budgets
    SET is_active = TRUE
  WHERE instance = :'instance'
-   AND course_id = :course_id
+   AND course_id = :'course_id'
 RETURNING instance, course_id, max_budget, is_active;

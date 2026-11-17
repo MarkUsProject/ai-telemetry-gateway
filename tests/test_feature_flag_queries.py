@@ -1,8 +1,10 @@
 """Tests for the four feature-flag queries in db/queries/.
 
 An admin runs these by hand with ``psql -f``. The course queries take psql
-variables (``:'instance'``, ``:course_id``); psycopg has no such syntax, so
+variables (``:'instance'``, ``:'course_id'``); psycopg has no such syntax, so
 the tests swap each variable for a bound parameter and run the same SQL.
+Both variables are quoted, so psql sends each one as a single string value.
+The tests bind strings too, which the server reads the same way.
 
 Every test rolls back, so the dev database keeps its switches.
 """
@@ -10,6 +12,9 @@ Every test rolls back, so the dev database keeps its switches.
 from __future__ import annotations
 
 from pathlib import Path
+
+import psycopg
+import pytest
 
 QUERIES_DIR = Path(__file__).resolve().parent.parent / "db" / "queries"
 
@@ -23,8 +28,11 @@ def _load(name: str) -> str:
 
 def _load_course_query(name: str) -> str:
     sql = _load(name)
-    assert ":'instance'" in sql and ":course_id" in sql, f"{name} lost a psql variable"
-    return sql.replace(":'instance'", "%(instance)s").replace(":course_id", "%(course_id)s")
+    assert ":'instance'" in sql and ":'course_id'" in sql, f"{name} lost a psql variable"
+    # An unquoted variable is pasted into the SQL as is, so "12 OR TRUE"
+    # would match every course.
+    assert ":instance" not in sql and ":course_id" not in sql, f"{name} has an unquoted psql variable"
+    return sql.replace(":'instance'", "%(instance)s").replace(":'course_id'", "%(course_id)s")
 
 
 def _flag(conn):
@@ -47,7 +55,7 @@ def _course_is_active(conn) -> bool:
     ).fetchone()[0]
 
 
-COURSE_PARAMS = {"instance": TEST_INSTANCE, "course_id": TEST_COURSE_ID}
+COURSE_PARAMS = {"instance": TEST_INSTANCE, "course_id": str(TEST_COURSE_ID)}
 
 
 # ---------- global ----------
@@ -135,3 +143,18 @@ def test_course_queries_change_nothing_for_an_unknown_course(conn):
         "SELECT COUNT(*) FROM course_budgets WHERE instance = %s", (TEST_INSTANCE,)
     ).fetchone()[0]
     assert count == 0
+
+
+@pytest.mark.parametrize("name", ["enable_course.sql", "disable_course.sql"])
+def test_course_queries_refuse_a_course_id_that_is_not_a_number(conn, name):
+    """``-v course_id='12 OR TRUE'`` once switched every course. Quoted, the
+    whole value is one string, and the server refuses it as an integer."""
+    _add_course(conn, is_active=name == "disable_course.sql")
+    before = _course_is_active(conn)
+    params = {"instance": "no.such.instance", "course_id": f"{TEST_COURSE_ID} OR TRUE"}
+
+    with pytest.raises(psycopg.errors.InvalidTextRepresentation):
+        with conn.transaction():  # a savepoint, so the connection stays usable
+            conn.execute(_load_course_query(name), params)
+
+    assert _course_is_active(conn) is before
