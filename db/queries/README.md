@@ -13,8 +13,8 @@ A comment at the top of each file lists:
 
 | File | Purpose | Called by |
 |---|---|---|
-| `active_period.sql` | Find the budget period active now. Return empty if none is active. | Gatekeeper, every chat completion |
-| `global_spend.sql` | Sum the 10 slot rows for a period to get total CAD spent | Gatekeeper, every chat completion |
+| `active_period.sql` | Find the budget period active now. Return empty if none is active. | Gatekeeper, every call |
+| `global_spend.sql` | Sum the 10 slot rows for a period to get total CAD spent | Gatekeeper, every call |
 | `course_spend.sql` | Sum `usage_logs.total_cost` for a course within the period | Gatekeeper, after the global check passes |
 | `disable_global.sql` | AI feature flag: turn AI off for every course, in every term | Admin, by hand |
 | `enable_global.sql` | AI feature flag: turn AI on | Admin, by hand |

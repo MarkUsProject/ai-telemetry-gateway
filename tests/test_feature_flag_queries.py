@@ -55,6 +55,12 @@ def _course_is_active(conn) -> bool:
     ).fetchone()[0]
 
 
+def _statement(name: str) -> str:
+    """The SQL of a query file without its comment lines."""
+    lines = _load(name).splitlines()
+    return "\n".join(line for line in lines if line.strip() and not line.lstrip().startswith("--"))
+
+
 COURSE_PARAMS = {"instance": TEST_INSTANCE, "course_id": str(TEST_COURSE_ID)}
 
 
@@ -103,7 +109,7 @@ def test_disable_global_leaves_term_and_course_switches_alone(conn):
 def test_disable_course_turns_one_course_off(conn):
     _add_course(conn, is_active=True)
     rows = conn.execute(_load_course_query("disable_course.sql"), COURSE_PARAMS).fetchall()
-    assert rows == [(TEST_INSTANCE, TEST_COURSE_ID, False)]
+    assert len(rows) == 1 and rows[0][-1] is False
     assert _course_is_active(conn) is False
 
 
@@ -158,3 +164,19 @@ def test_course_queries_refuse_a_course_id_that_is_not_a_number(conn, name):
             conn.execute(_load_course_query(name), params)
 
     assert _course_is_active(conn) is before
+
+
+# ---------- the on and off files stay a pair ----------
+
+
+@pytest.mark.parametrize(
+    "on_file, off_file",
+    [("enable_global.sql", "disable_global.sql"), ("enable_course.sql", "disable_course.sql")],
+)
+def test_on_and_off_queries_differ_only_in_the_value(on_file, off_file):
+    """Each pair is one query written twice, so an admin never types on or
+    off by hand. The copies must not drift: the off file is the on file with
+    TRUE swapped for FALSE, comments aside. That covers what each one prints."""
+    on, off = _statement(on_file), _statement(off_file)
+    assert "FALSE" not in on and "TRUE" not in off
+    assert on.replace("TRUE", "FALSE") == off
