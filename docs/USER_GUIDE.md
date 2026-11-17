@@ -144,7 +144,7 @@ Two switches make up the AI feature flag. A call needs both on.
 | Switch | Scope | Starts as | Message when off |
 |---|---|---|---|
 | `global_settings.ai_enabled` | Every course on every MarkUs site | Off on a deployed gateway. On in the local stack. | "AI features are currently disabled for all courses. Contact your MarkUs administrator." |
-| `course_budgets.is_active` | One course on one MarkUs site | Off. A course has no row until an admin adds one. | "Course AI features are disabled for course_id=12 (is_active = false)." |
+| `course_budgets.is_active` | One course on one MarkUs site | No row, so the course is refused. On once an admin adds the row: a new row starts on. | "Course AI features are disabled for course_id=12 (is_active = false)." |
 
 The global switch belongs to no term. It stays off when a new term begins, until an admin turns it on. The gate reads it before any other database check, so the teacher sees the "disabled" message first. If the row is missing, the gate treats the switch as off.
 
@@ -479,7 +479,7 @@ The tests cover:
 | `LITELLM_API_KEY is not set` | The tester virtualenv runs the old `ai-telemetry-gateway-connection` branch. Set **AI Feedback library version** to `main`. Save again. |
 | 400 "max_tokens is required" | The tester virtualenv holds an `ai_feedback` build from before `OpenAIRemoteModel` set a default `max_tokens`. Rebuild it from `main` (step 8). |
 | Every call returns 400 "Missing required MarkUs attribution" | The autotester leaves out the `x-litellm-spend-logs-metadata` header. Check that the autotester runs `master` with #731. Check that `ai_feedback` runs `main`. Check that `model: openai-remote` is set. |
-| Every call returns 400 "AI features are currently disabled for all courses" | The global AI feature flag is off, or its row is missing. A deployed gateway starts this way. Run `db/queries/enable_global.sql` as the admin role. On the local stack, run `docker compose run --rm migrate seed`. |
+| Every call returns 400 "AI features are currently disabled for all courses" | The global AI feature flag is off, or its row is missing. A deployed gateway starts this way. Run `db/queries/enable_global.sql` as the admin role. This works on the local stack too. The local seed (`docker compose run --rm migrate seed`) adds a missing row, but it leaves an "off" row off. |
 | Every call returns 400 "Gateway temporarily unavailable" | The litellm container fails to reach the database. `docker compose logs litellm` shows the exception. |
 | Zero new rows after re-running the same test | Check `docker logs aitg-litellm`. A line with `served from cache ... the ledger is correct` means LiteLLM replayed the reply at zero cost. The missing row is correct. A line with `reusing request ids ... under-reporting spend` points to a real fault. |
 | Costs read as 0 | `OPENAI_API_KEY` is unset or fake. OpenAI returned 401. The success hook did not fire. |

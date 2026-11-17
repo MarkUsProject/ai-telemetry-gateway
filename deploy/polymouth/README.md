@@ -56,7 +56,7 @@ The rehearsal passes when the smoke test prints `all checks passed`. It runs in 
    ```
    The seed leaves the AI feature flag off. Turn it on, so the smoke test runs every check:
    ```
-   ( source /data/otelcol/aitg-rehearsal/secrets.env && psql "$DATABASE_URL" -f ../../db/queries/enable_global.sql )
+   ( source /data/otelcol/aitg-rehearsal/secrets.env && psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ../../db/queries/enable_global.sql )
    ```
 6. Start the gateway in a second terminal:
    ```
@@ -116,13 +116,44 @@ Staging repeats the rehearsal in Dean's folder, with real budgets and the real d
    ```
 10. The gateway still refuses every call: the AI feature flag is off. When you are ready for AI calls, turn it on:
     ```
-    ( source /data/ai-telemetry-gateway/secrets.env && psql "$DATABASE_URL" -f ../../db/queries/enable_global.sql )
+    ( source /data/ai-telemetry-gateway/secrets.env && psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ../../db/queries/enable_global.sql )
     ```
     `disable_global.sql` in the same folder turns it off again. Neither needs a restart.
 11. Run the checks again, now in full. Check 5 makes one real `gpt-4o` call of at most 5 output tokens. With the flag on, the test turns it off for one call and back on, so real calls are refused for about a second. The test never turns the flag on by itself.
     ```
     ./smoke-test.sh staging.conf gpt-4o https://polymouth.teach.cs.toronto.edu
     ```
+
+## Upgrading a running gateway
+
+Follow this order. The schema must change before the new code starts.
+
+The running service keeps its old code in memory until it restarts. New code that starts on an old schema refuses every call with "Gateway temporarily unavailable". So `db.sh up` comes before the restart.
+
+1. On your Mac, replace the source copy on polymouth with the new branch:
+   ```
+   ssh polymouth 'rm -rf /data/ai-telemetry-gateway/src'
+   git archive <branch> | ssh polymouth 'umask 007 && mkdir /data/ai-telemetry-gateway/src && tar -x -C /data/ai-telemetry-gateway/src'
+   ```
+2. On polymouth, rebuild. This copies the new code, migrations and seeds. It keeps `secrets.env`. The service still runs the old code.
+   ```
+   cd /data/ai-telemetry-gateway/src/deploy/polymouth
+   ./install.sh staging.conf
+   ```
+3. Apply the new migrations. Then load the seeds. Both are safe to re-run. Rows that exist stay as they are.
+   ```
+   ./db.sh staging.conf up
+   ./db.sh staging.conf seed
+   ```
+4. Check the AI feature flag. An upgrade that adds the flag seeds it off. To keep AI on, turn the flag on before the restart (step 10 of Staging).
+5. Ask Dean to restart the service:
+   ```
+   svc -t /service/ai-telemetry-gateway
+   ```
+6. Run the checks:
+   ```
+   ./smoke-test.sh staging.conf gpt-4o https://polymouth.teach.cs.toronto.edu
+   ```
 
 ## Where to look when something breaks
 
@@ -137,4 +168,5 @@ Start with the gateway's own log. Then find the symptom in the table.
 | Every call returns 502 through Apache | `svstat /service/ai-telemetry-gateway` shows the service up |
 | `usage_logs` stays empty | `var/dead-letter.jsonl` holds the failed writes |
 | Every call returns 400 "AI features are currently disabled" | The AI feature flag is off. Step 10 turns it on. |
+| Every call returns 400 "Gateway temporarily unavailable" after an upgrade | The service restarted before `db.sh up` ran. Run `./db.sh staging.conf up`. No second restart is needed. |
 | The smoke test prints `SKIP` | The AI feature flag is off. Step 10 turns it on. |
