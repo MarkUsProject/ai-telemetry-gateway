@@ -52,6 +52,23 @@ GOOD_DATA = {
 # ---------- pure: max_tokens ----------
 
 
+@pytest.mark.parametrize(
+    "call_type", ["atext_completion", "aembedding", "aresponses", "a_call_type_litellm_adds_later"]
+)
+def test_max_tokens_required_for_every_call_type(call_type):
+    """No database needed: the max_tokens rule runs first, and it must run
+    for every call type, not only chat completions."""
+    rejection = _call_hook(
+        {"litellm_metadata": {"spend_logs_metadata": FULL_METADATA}}, call_type=call_type
+    )
+    assert rejection and "max_tokens is required" in rejection
+
+
+def test_hook_skips_a_call_type_let_through_on_purpose(monkeypatch):
+    monkeypatch.setattr(attribution_guard, "UNGUARDED_CALL_TYPES", frozenset({"health_probe"}))
+    assert _call_hook({}, call_type="health_probe") is None
+
+
 def test_max_tokens_required():
     msg = gatekeeper.check_max_tokens({"litellm_metadata": {}})
     assert msg is not None and "required" in msg
@@ -167,13 +184,13 @@ def fresh_course(live_env):
         conn.commit()
 
 
-def _call_hook(data):
+def _call_hook(data, call_type="completion"):
     """Drive async_pre_call_hook and return either None (allow) or the rejection
     message string. Any other exception bubbles."""
     try:
         asyncio.run(
             gatekeeper.gatekeeper_instance.async_pre_call_hook(
-                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+                user_api_key_dict=None, cache=None, data=data, call_type=call_type
             )
         )
         return None
@@ -271,6 +288,30 @@ def test_global_ai_flag_off_rejected(fresh_course, live_env):
 
     rejection = _call_hook(dict(GOOD_DATA))
     assert rejection and "AI features are currently disabled for all courses" in rejection
+
+
+# What LiteLLM passes for /v1/chat/completions, /v1/completions and
+# /v1/embeddings, plus one name it does not have yet.
+ROUTE_CALL_TYPES = ["acompletion", "atext_completion", "aembedding", "a_call_type_litellm_adds_later"]
+
+
+@pytest.mark.parametrize("call_type", ROUTE_CALL_TYPES)
+def test_global_ai_flag_off_rejects_every_call_type(fresh_course, live_env, call_type):
+    """/v1/completions once skipped the flag: LiteLLM calls it
+    "atext_completion", and the hook only knew "text_completion"."""
+    import psycopg
+
+    with psycopg.connect(live_env) as conn, conn.cursor() as cur:
+        cur.execute("UPDATE aitg.global_settings SET ai_enabled = FALSE")
+        conn.commit()
+
+    rejection = _call_hook(dict(GOOD_DATA), call_type=call_type)
+    assert rejection and "AI features are currently disabled for all courses" in rejection
+
+
+@pytest.mark.parametrize("call_type", ROUTE_CALL_TYPES)
+def test_every_call_type_passes_when_all_checks_pass(fresh_course, call_type):
+    assert _call_hook(dict(GOOD_DATA), call_type=call_type) is None
 
 
 def test_global_ai_flag_missing_row_rejected(fresh_course, live_env):

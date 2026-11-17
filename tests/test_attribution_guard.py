@@ -77,7 +77,42 @@ def test_hook_rejects_when_metadata_entirely_absent():
         _call({"model": "gpt-4o-mini"})
 
 
-def test_hook_ignores_non_completion_calls():
-    # Embeddings and the like carry no grading attribution; never block them.
-    data = {"model": "text-embedding-3-small"}
-    assert _call(data, call_type="embedding") is data
+# The names LiteLLM gives the routes that can reach a model. "atext_completion"
+# and "aembedding" are what /v1/completions and /v1/embeddings pass today.
+OTHER_CALL_TYPES = [
+    "acompletion",
+    "text_completion",
+    "atext_completion",
+    "embedding",
+    "aembedding",
+    "aresponses",
+    "anthropic_messages",
+    "aimage_generation",
+    "pass_through_endpoint",
+    "a_call_type_litellm_adds_later",
+]
+
+
+@pytest.mark.parametrize("call_type", OTHER_CALL_TYPES)
+def test_hook_rejects_every_call_type_without_attribution(call_type):
+    with pytest.raises(Exception) as exc:
+        _call({"model": "gpt-4o"}, call_type=call_type)
+    assert "Missing required MarkUs attribution" in str(getattr(exc.value, "detail", exc.value))
+
+
+@pytest.mark.parametrize("call_type", OTHER_CALL_TYPES)
+def test_hook_allows_every_call_type_with_attribution(call_type):
+    data = {"litellm_metadata": {"spend_logs_metadata": FULL_METADATA}}
+    assert _call(data, call_type=call_type) is data
+
+
+def test_no_call_type_is_let_through_today():
+    # Adding a name here opens a way around the guards. Change this test in
+    # the same commit, so the choice shows up in review.
+    assert attribution_guard.UNGUARDED_CALL_TYPES == frozenset()
+
+
+def test_hook_skips_a_call_type_let_through_on_purpose(monkeypatch):
+    monkeypatch.setattr(attribution_guard, "UNGUARDED_CALL_TYPES", frozenset({"health_probe"}))
+    data = {"model": "gpt-4o"}
+    assert _call(data, call_type="health_probe") is data

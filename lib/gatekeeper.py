@@ -1,8 +1,8 @@
 """Budget enforcement and slotted accounting for the LiteLLM gateway.
 
 This module is the second pre-call hook (after ``attribution_guard``) and the
-third logger callback (alongside ``telemetry_adapter``). Every billable call
-runs the same checks in order; the first that fails halts the call with
+third logger callback (alongside ``telemetry_adapter``). Every call, of
+every call type, runs the same checks in order; the first that fails halts the call with
 an operator-actionable error:
 
 1. ``max_tokens`` is present and at or below the configured ceiling.
@@ -56,7 +56,6 @@ _LOG = logging.getLogger("aitg.gatekeeper")
 _MAX_TOKENS_CEILING_ENV = "AITG_MAX_TOKENS_CEILING"
 _DEFAULT_MAX_TOKENS_CEILING = 4096
 _SLOT_COUNT = 10
-_GUARDED_CALL_TYPES = ("completion", "acompletion", "text_completion")
 # Shown to the instructor in the MarkUs test result, so it avoids gateway
 # jargon. Flipped by db/queries/enable_global.sql and disable_global.sql.
 _AI_DISABLED_MESSAGE = (
@@ -331,7 +330,9 @@ class Gatekeeper(_Base):
     """Pre-call enforcement and post-call slot accounting."""
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
-        if call_type not in _GUARDED_CALL_TYPES:
+        # Same rule as the attribution guard: every call type is checked
+        # unless it is let through on purpose.
+        if not attribution_guard.is_guarded(call_type):
             return data
         try:
             rejection = await asyncio.to_thread(_evaluate, data)
