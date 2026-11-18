@@ -45,13 +45,19 @@ docker compose run --rm migrate up       # applies db/migrations/*.sql
 docker compose run --rm migrate seed     # loads db/seed/*.sql (idempotent)
 ```
 
-After these commands run, the `aitg` schema holds the five tables:
+After these commands run, the `aitg` schema holds the six tables:
 
 - `api_keys`
 - `global_budget_periods`
 - `course_budgets`
 - `budget_slots`
 - `usage_logs`
+- `global_settings`
+
+The seed turns the global AI feature flag on (`global_settings.ai_enabled`).
+Until the seed runs, the gateway refuses every call with "AI features are
+currently disabled for all courses". See "AI feature flag" in
+`../docs/USER_GUIDE.md`.
 
 It holds one more: the `schema_migrations` tracking table.
 

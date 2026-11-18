@@ -15,6 +15,7 @@ EXPECTED_TABLES = {
     "course_budgets",
     "budget_slots",
     "usage_logs",
+    "global_settings",
 }
 
 
@@ -162,3 +163,27 @@ def test_course_budgets_multi_instance_allowed(conn):
         "SELECT instance, max_budget FROM course_budgets WHERE course_id = 99 ORDER BY instance"
     ).fetchall()
     assert rows == [("a.example", 50), ("b.example", 75)]
+
+
+def test_global_settings_allows_only_one_row(conn):
+    """The feature flag is one switch. A second row would make it ambiguous."""
+    conn.execute("DELETE FROM global_settings")
+    conn.execute("INSERT INTO global_settings (ai_enabled) VALUES (TRUE)")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        conn.execute("INSERT INTO global_settings (ai_enabled) VALUES (FALSE)")
+
+
+def test_global_settings_rejects_a_false_singleton_key(conn):
+    """The CHECK closes the other way to a second row: singleton = FALSE."""
+    conn.execute("DELETE FROM global_settings")
+    with pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute("INSERT INTO global_settings (singleton, ai_enabled) VALUES (FALSE, TRUE)")
+
+
+def test_global_settings_defaults_to_off(conn):
+    """A row inserted without a value must not switch AI on."""
+    conn.execute("DELETE FROM global_settings")
+    row = conn.execute(
+        "INSERT INTO global_settings DEFAULT VALUES RETURNING ai_enabled"
+    ).fetchone()
+    assert row == (False,)

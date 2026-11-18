@@ -1,4 +1,4 @@
-"""Proxy-boundary guard: reject chat completions missing MarkUs attribution.
+"""Proxy-boundary guard: reject calls missing MarkUs attribution.
 
 Every cloud OpenAI call must reach the proxy carrying the four attribution
 fields so the telemetry ledger knows which course to bill and the gatekeeper
@@ -35,8 +35,21 @@ except ImportError:  # pragma: no cover - exercised only outside the container
 # not required here.
 REQUIRED_FIELDS = ("instance", "course_id", "assignment_id", "group_id")
 
-# Call types that carry grading attribution. Embeddings/health/etc. do not.
-_GUARDED_CALL_TYPES = ("completion", "acompletion", "text_completion")
+# Call types that skip the guards on purpose. Every other call type is
+# guarded, including ones LiteLLM adds later: a new route must not open a way
+# around attribution, the budgets or the AI feature flag. LiteLLM names the
+# same route differently across versions ("text_completion" became
+# "atext_completion"), so a list of guarded names goes stale and fails open.
+#
+# Empty today: MarkUs sends chat completions only. Add a name here only for a
+# route that can never reach a paid model.
+UNGUARDED_CALL_TYPES: frozenset = frozenset()
+
+
+def is_guarded(call_type: str) -> bool:
+    """True unless ``call_type`` is let through on purpose. The gatekeeper
+    uses this too, so both hooks guard the same set of calls."""
+    return call_type not in UNGUARDED_CALL_TYPES
 
 
 def extract_attribution(data: dict) -> dict:
@@ -84,10 +97,10 @@ def _rejection(detail: str) -> Exception:
 
 
 class AttributionGuard(_Base):
-    """LiteLLM pre-call hook enforcing attribution on every grading call."""
+    """LiteLLM pre-call hook enforcing attribution on every call."""
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
-        if call_type not in _GUARDED_CALL_TYPES:
+        if not is_guarded(call_type):
             return data
         missing = missing_fields(extract_attribution(data))
         if missing:

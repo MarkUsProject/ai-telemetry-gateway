@@ -1,0 +1,12 @@
+-- The global AI feature flag, switched off.
+-- Replaces db/seed/003_global_settings.sql (which switches it on for local
+-- development). A deployed gateway refuses every call until an admin runs
+-- db/queries/enable_global.sql.
+-- Idempotent: re-running leaves an existing row untouched, so a flag that
+-- is already on stays on.
+
+SET search_path TO aitg;
+
+INSERT INTO global_settings (ai_enabled)
+VALUES (FALSE)
+ON CONFLICT (singleton) DO NOTHING;
