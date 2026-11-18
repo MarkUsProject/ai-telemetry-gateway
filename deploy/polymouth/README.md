@@ -146,10 +146,7 @@ The running service keeps its old code in memory until it restarts. New code tha
    ./db.sh staging.conf seed
    ```
 4. Check the AI feature flag. An upgrade that adds the flag seeds it off. To keep AI on, turn the flag on before the restart (step 10 of Staging).
-5. Ask Dean to restart the service:
-   ```
-   svc -t /service/ai-telemetry-gateway
-   ```
+5. Restart the service.
 6. Run the checks:
    ```
    ./smoke-test.sh staging.conf gpt-4o https://polymouth.teach.cs.toronto.edu
