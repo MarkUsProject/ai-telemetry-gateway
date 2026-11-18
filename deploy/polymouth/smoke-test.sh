@@ -117,9 +117,6 @@ admin_psql -c "INSERT INTO aitg.course_budgets (instance, course_id, max_budget,
                VALUES ('${MARKUS_INSTANCE}', ${TEST_COURSE}, 100.00, NULL, TRUE)
                ON CONFLICT (instance, course_id) DO UPDATE SET max_budget = 100.00, is_active = TRUE;" >/dev/null
 
-# t, f, or empty when the row is absent (which the gatekeeper reads as off).
-flag="$(admin_psql --tuples-only --no-align -c "SELECT ai_enabled FROM aitg.global_settings;")"
-
 log "calling $url with model $model"
 
 # 1. Attribution guard (user guide step 2).
@@ -132,6 +129,12 @@ check "refuses a call with no max_tokens" 400 "$(post - yes)" "max_tokens is req
 # 4. Global AI feature flag (user guide, "AI feature flag"): off refuses a
 # call that is otherwise complete.
 skip_reason="the AI feature flag is off"
+# Read the flag here, right before the hold, and not at the start. Checks 1-3
+# can take minutes. An admin who turns AI off during them must be seen now,
+# or the test would write its own "off" over the admin's and then turn AI
+# back on. A few milliseconds remain between this read and the hold.
+# t, f, or empty when the row is absent (which the gatekeeper reads as off).
+flag="$(admin_psql --tuples-only --no-align -c "SELECT ai_enabled FROM aitg.global_settings;")"
 if [[ "$flag" == "t" ]]; then
   hold_flag_off
   check "refuses a call while the AI feature flag is off" 400 "$(post 5 yes)" "AI features are currently disabled"
