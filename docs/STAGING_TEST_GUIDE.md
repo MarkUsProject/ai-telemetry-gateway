@@ -121,7 +121,7 @@ tail -n 50 /data/ai-telemetry-gateway/logs/current
 | 400 `max_tokens is required` | The call sends no reply limit | Use library version `main`. Use scope `code` or `text`. |
 | 400 `Gateway temporarily unavailable` | The gateway lost the database | Run the `aitg_psql` line from "Guard checks" |
 | 400 `Course budget exhausted` | The course spent its CAD 10.00 | Raise `max_budget` in `aitg.course_budgets` |
-| 500 `Connection error` on `qwen3:4b-instruct` | Ollama runs on polymouth | Use `gpt-4o` |
+| `Invalid model name` on `qwen3:4b-instruct` or `gemma4:12b` | Staging lists `gpt-4o` only. Charlotte has no Ollama. | Use `gpt-4o` |
 | Upstream 401 on `gpt-4o` | The UofT key is empty or wrong | Ask the gateway owner |
 | Reply 200 with no ledger row | The write failed | Read `var/dead-letter.jsonl`. Each line is a lost row. Tell the gateway owner. |
 
