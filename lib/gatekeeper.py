@@ -1,14 +1,15 @@
 """Budget enforcement and slotted accounting for the LiteLLM gateway.
 
 This module is the second pre-call hook (after ``attribution_guard``) and the
-third logger callback (alongside ``telemetry_adapter``). Every billable call
-runs the same six checks in order; the first that fails halts the call with
+third logger callback (alongside ``telemetry_adapter``). Every call, of
+every call type, runs the same checks in order; the first that fails halts the call with
 an operator-actionable error:
 
 1. ``max_tokens`` is present and at or below the configured ceiling.
-2. An active ``global_budget_periods`` row covers the current timestamp.
+2. The global AI feature flag (``global_settings.ai_enabled``) is on.
 3. The upstream key (``api_keys.is_active``) is on.
-4. The active period (``global_budget_periods.is_active``) is on.
+4. An active ``global_budget_periods`` row covers the current timestamp
+   (``global_budget_periods.is_active`` is the per-term switch).
 5. Global spend (SUM of ten slot rows) is at or below the period's cap.
 6. The course budget exists, its kill switch is on, and per-course spend
    (from ``usage_logs``) is at or below the course cap.
@@ -55,7 +56,12 @@ _LOG = logging.getLogger("aitg.gatekeeper")
 _MAX_TOKENS_CEILING_ENV = "AITG_MAX_TOKENS_CEILING"
 _DEFAULT_MAX_TOKENS_CEILING = 4096
 _SLOT_COUNT = 10
-_GUARDED_CALL_TYPES = ("completion", "acompletion", "text_completion")
+# Shown to the instructor in the MarkUs test result, so it avoids gateway
+# jargon. Flipped by db/queries/enable_global.sql and disable_global.sql.
+_AI_DISABLED_MESSAGE = (
+    "AI features are currently disabled for all courses. "
+    "Contact your MarkUs administrator."
+)
 
 
 def _ceiling() -> int:
@@ -100,6 +106,14 @@ def _rejection(detail: str) -> Exception:
 def _select_random_slot() -> int:
     """Uniform random over [1, 10]. Non-uniform sources reintroduce hot spots."""
     return random.randint(1, _SLOT_COUNT)
+
+
+def _fetch_ai_enabled(cur) -> bool:
+    """Return the global AI feature flag. A missing row reads as off: the
+    flag is opt-in, and absence must not bypass it (fail-closed)."""
+    cur.execute("SELECT ai_enabled FROM aitg.global_settings")
+    row = cur.fetchone()
+    return bool(row and row[0])
 
 
 def _fetch_active_period(cur) -> Optional[tuple]:
@@ -206,6 +220,12 @@ def _evaluate_against_db(conn, instance: str, course_id: int) -> Optional[str]:
     """Run every database-backed budget check against ``conn``. Returns a
     rejection message on the first failure or None when the call may proceed.
     Side effect: fires the alert when the course just crossed its threshold."""
+    # The feature flag comes first: when AI is off, nothing else is looked up
+    # or written, and the caller gets the one message that explains why.
+    with conn.cursor() as cur:
+        if not _fetch_ai_enabled(cur):
+            return _AI_DISABLED_MESSAGE
+
     api_key_id = telemetry_adapter.resolve_api_key_id(conn)
     with conn.cursor() as cur:
         if not _fetch_api_key_is_active(cur, api_key_id):
@@ -310,7 +330,9 @@ class Gatekeeper(_Base):
     """Pre-call enforcement and post-call slot accounting."""
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data: dict, call_type: str):
-        if call_type not in _GUARDED_CALL_TYPES:
+        # Same rule as the attribution guard: every call type is checked
+        # unless it is let through on purpose.
+        if not attribution_guard.is_guarded(call_type):
             return data
         try:
             rejection = await asyncio.to_thread(_evaluate, data)

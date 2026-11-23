@@ -2,9 +2,9 @@
 
 Two layers:
 1. Pure ``check_max_tokens`` and ``_select_random_slot`` — no DB.
-2. Live integration against the running aitg-postgres, exercising the four
-   enforcement paths (max_tokens missing, course cap, global cap, kill
-   switches) plus the slot-write distribution.
+2. Live integration against the running aitg-postgres, exercising the
+   enforcement paths (max_tokens missing, global AI feature flag, course
+   cap, global cap, kill switches) plus the slot-write distribution.
 
 Live tests skip cleanly when ``AITG_TEST_DATABASE_URL`` is unset.
 """
@@ -50,6 +50,23 @@ GOOD_DATA = {
 
 
 # ---------- pure: max_tokens ----------
+
+
+@pytest.mark.parametrize(
+    "call_type", ["atext_completion", "aembedding", "aresponses", "a_call_type_litellm_adds_later"]
+)
+def test_max_tokens_required_for_every_call_type(call_type):
+    """No database needed: the max_tokens rule runs first, and it must run
+    for every call type, not only chat completions."""
+    rejection = _call_hook(
+        {"litellm_metadata": {"spend_logs_metadata": FULL_METADATA}}, call_type=call_type
+    )
+    assert rejection and "max_tokens is required" in rejection
+
+
+def test_hook_skips_a_call_type_let_through_on_purpose(monkeypatch):
+    monkeypatch.setattr(attribution_guard, "UNGUARDED_CALL_TYPES", frozenset({"health_probe"}))
+    assert _call_hook({}, call_type="health_probe") is None
 
 
 def test_max_tokens_required():
@@ -114,6 +131,8 @@ def fresh_course(live_env):
         periods_before = cur.fetchall()
         cur.execute("SELECT is_active, id FROM aitg.api_keys WHERE key_name = %s", (API_KEY_NAME,))
         keys_before = cur.fetchall()
+        cur.execute("SELECT ai_enabled FROM aitg.global_settings")
+        flag_before = cur.fetchone()
 
         cur.execute(
             """
@@ -129,6 +148,10 @@ def fresh_course(live_env):
         cur.execute("UPDATE aitg.budget_slots SET current_value = 0")
         cur.execute("UPDATE aitg.api_keys SET is_active = TRUE WHERE key_name = %s", (API_KEY_NAME,))
         cur.execute("UPDATE aitg.global_budget_periods SET is_active = TRUE")
+        cur.execute(
+            "INSERT INTO aitg.global_settings (ai_enabled) VALUES (TRUE) "
+            "ON CONFLICT (singleton) DO UPDATE SET ai_enabled = TRUE"
+        )
         conn.commit()
 
     yield
@@ -146,6 +169,10 @@ def fresh_course(live_env):
             "UPDATE aitg.api_keys SET is_active = %s WHERE id = %s",
             keys_before,
         )
+        # Put the flag back exactly: the row may have been absent before.
+        cur.execute("DELETE FROM aitg.global_settings")
+        if flag_before is not None:
+            cur.execute("INSERT INTO aitg.global_settings (ai_enabled) VALUES (%s)", flag_before)
         cur.execute(
             "DELETE FROM aitg.usage_logs WHERE instance = %s AND course_id = %s",
             (TEST_INSTANCE, TEST_COURSE_ID),
@@ -157,13 +184,13 @@ def fresh_course(live_env):
         conn.commit()
 
 
-def _call_hook(data):
+def _call_hook(data, call_type="completion"):
     """Drive async_pre_call_hook and return either None (allow) or the rejection
     message string. Any other exception bubbles."""
     try:
         asyncio.run(
             gatekeeper.gatekeeper_instance.async_pre_call_hook(
-                user_api_key_dict=None, cache=None, data=data, call_type="completion"
+                user_api_key_dict=None, cache=None, data=data, call_type=call_type
             )
         )
         return None
@@ -250,6 +277,74 @@ def test_global_period_kill_switch_rejected(fresh_course, live_env):
 
     rejection = _call_hook(dict(GOOD_DATA))
     assert rejection and "No active budget period" in rejection
+
+
+def test_global_ai_flag_off_rejected(fresh_course, live_env):
+    import psycopg
+
+    with psycopg.connect(live_env) as conn, conn.cursor() as cur:
+        cur.execute("UPDATE aitg.global_settings SET ai_enabled = FALSE")
+        conn.commit()
+
+    rejection = _call_hook(dict(GOOD_DATA))
+    assert rejection and "AI features are currently disabled for all courses" in rejection
+
+
+# What LiteLLM passes for /v1/chat/completions, /v1/completions and
+# /v1/embeddings, plus one name it does not have yet.
+ROUTE_CALL_TYPES = ["acompletion", "atext_completion", "aembedding", "a_call_type_litellm_adds_later"]
+
+
+@pytest.mark.parametrize("call_type", ROUTE_CALL_TYPES)
+def test_global_ai_flag_off_rejects_every_call_type(fresh_course, live_env, call_type):
+    """/v1/completions once skipped the flag: LiteLLM calls it
+    "atext_completion", and the hook only knew "text_completion"."""
+    import psycopg
+
+    with psycopg.connect(live_env) as conn, conn.cursor() as cur:
+        cur.execute("UPDATE aitg.global_settings SET ai_enabled = FALSE")
+        conn.commit()
+
+    rejection = _call_hook(dict(GOOD_DATA), call_type=call_type)
+    assert rejection and "AI features are currently disabled for all courses" in rejection
+
+
+@pytest.mark.parametrize("call_type", ROUTE_CALL_TYPES)
+def test_every_call_type_passes_when_all_checks_pass(fresh_course, call_type):
+    assert _call_hook(dict(GOOD_DATA), call_type=call_type) is None
+
+
+def test_global_ai_flag_missing_row_rejected(fresh_course, live_env):
+    """Fail-closed: a database that was migrated but never seeded has no row,
+    and that must read as off rather than slip through."""
+    import psycopg
+
+    with psycopg.connect(live_env) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM aitg.global_settings")
+        conn.commit()
+
+    rejection = _call_hook(dict(GOOD_DATA))
+    assert rejection and "AI features are currently disabled for all courses" in rejection
+
+
+def test_global_ai_flag_off_wins_over_other_rejections(fresh_course, live_env):
+    """The flag is checked first, so the caller hears "disabled" even when the
+    key, the term and the course would also have refused the call."""
+    import psycopg
+
+    with psycopg.connect(live_env) as conn, conn.cursor() as cur:
+        cur.execute("UPDATE aitg.global_settings SET ai_enabled = FALSE")
+        cur.execute("UPDATE aitg.api_keys SET is_active = FALSE WHERE key_name = %s", (API_KEY_NAME,))
+        cur.execute("UPDATE aitg.global_budget_periods SET is_active = FALSE")
+        cur.execute(
+            "UPDATE aitg.course_budgets SET is_active = FALSE "
+            "WHERE instance = %s AND course_id = %s",
+            (TEST_INSTANCE, TEST_COURSE_ID),
+        )
+        conn.commit()
+
+    rejection = _call_hook(dict(GOOD_DATA))
+    assert rejection and "AI features are currently disabled for all courses" in rejection
 
 
 def test_api_key_kill_switch_rejected(fresh_course, live_env):
